@@ -1,0 +1,85 @@
+# BaCon baseline run on the CUB-200 GCD protocol.
+experiment:
+  name: bacon-cub
+  seed: 0
+  output_dir: outputs
+
+baseline:
+  name: bacon
+  configs:
+    bacon:
+      num_mlp_layers: 3
+      hidden_dim: 2048
+      bottleneck_dim: 256
+      projection_dim: 65536
+      use_bn: false
+      norm_last_layer: true
+      supervised_weight: 0.35
+      distribution_loss_weight: 1.0
+      distribution_power: 1.1
+      student_temp: 0.1
+      contrastive_temperature: 1.0
+      supervised_contrastive_temperature: 0.07
+      warmup_teacher_temp: 0.07
+      teacher_temp: 0.04
+      warmup_teacher_temp_epochs: 30
+      distribution_estimate_interval: 10
+      distribution_cluster_seed: 0
+      logit_adjustment_strength: 0.5
+      use_logit_adjust: false
+      known_sampling_power: 0.8
+      novel_sampling_power: 0.5
+      contrastive_warmup_epochs: 1
+
+method:
+  name: prototail
+  enabled: false
+  config:
+    num_slots: 3
+    part_weight: 0.5
+    part_loss_weight: 1.0
+    temperature: 0.1
+    gate_regularization_weight: 0.05
+    capacity_regularization_weight: 0.05
+    learning_rate: 0.05
+    gate_learning_rate: 0.01
+    shared_backbone_learning_rate: 0.01
+    prototype_warmup_epochs: 30
+    novel_prototype_end_epoch: 60
+    prototype_momentum: 0.99
+    pseudo_confidence: 0.7
+    use_spatial_loss: false
+    spatial_loss_weight: 0.05
+    spatial_loss_start_epoch: 50
+
+data:
+  name: cub
+  root: ./data
+  splits_root: ../Alo_SimGCD-main/data_uq_idxs_bacon
+  download: false
+  image_size: 224
+  crop_pct: 0.875
+  eval_batch_size: 256
+  protocol:
+    name: cub200_precomputed_long_tail
+    known_class_count: 100
+    imbalance_ratio: 10
+
+model:
+  backbone: dinov2_vitb14
+  pretrained: true
+  finetune_from_block: 11
+
+optimization:
+  epochs: 200
+  batch_size: 128
+  num_workers: 8
+  num_views: 2
+  learning_rate: 0.1
+  momentum: 0.9
+  weight_decay: 0.0001
+  scheduler_min_lr_ratio: 0.001
+
+evaluation:
+  interval: 1
+  metric: v2

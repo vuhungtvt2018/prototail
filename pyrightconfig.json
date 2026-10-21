@@ -1,0 +1,14 @@
+{
+  "include": ["src", "tests"],
+  "pythonVersion": "3.10",
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "extraPaths": ["src"]
+    },
+    {
+      "root": "src",
+      "extraPaths": ["src"]
+    }
+  ]
+}
