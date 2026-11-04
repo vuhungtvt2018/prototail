@@ -61,8 +61,12 @@ class SimGCDAdapter:
             "patch_tokens",
             "projection",
             "parametric_logits",
+            "distribution_estimator",
         }
     )
+
+    def __init__(self, eval_head: str = "kmeans") -> None:
+        self.eval_head = eval_head
 
     def create_training_context(
         self,
@@ -189,8 +193,41 @@ class SimGCDAdapter:
         baseline_model = nn.Sequential(model.backbone, model.projector)
         return {"main": parameter_groups(baseline_model)}
 
-    def before_epoch(self, model, epoch, context, config):
-        return None
+    def before_epoch(
+        self,
+        model: SimGCDNetwork,
+        epoch: int,
+        context: Mapping[str, Any],
+        config: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        interval = int(config.get("distribution_estimate_interval", 10))
+        if epoch != 0 and epoch % interval:
+            return None
+        loader = context.get("distribution_loader")
+        if loader is None:
+            freq = context.get("class_frequencies")
+            if freq is not None:
+                return {"estimated_frequencies": freq}
+            return None
+        device = next(model.backbone.parameters()).device
+        from prototail_gcd.baselines.bacon.losses import estimate_class_frequencies
+        try:
+            frequencies = estimate_class_frequencies(
+                model,
+                loader,
+                num_classes=int(context["num_classes"]),
+                num_known_classes=int(context["num_known_classes"]),
+                finetune_from_block=model.finetune_from_block,
+                random_state=int(config.get("distribution_cluster_seed", 0)),
+                device=device,
+            )
+            model.train()
+            return {"estimated_frequencies": frequencies}
+        except Exception:
+            freq = context.get("class_frequencies")
+            if freq is not None:
+                return {"estimated_frequencies": freq}
+            return None
 
     def after_optimizer_step(
         self,
@@ -207,10 +244,29 @@ class SimGCDAdapter:
         return None
 
     def predict(self, output: ModelOutput) -> PredictionOutput:
-        logits = output.branches["student"].logits
+        branch = output.branches["student"]
+        features = branch.global_features
+        logits = branch.logits
+        if self.eval_head == "kmeans" and features is not None:
+            return PredictionOutput(
+                class_ids=None,
+                features=F.normalize(features, dim=-1),
+            )
         if logits is None:
-            raise ValueError("SimGCD prediction requires student logits")
+            raise ValueError("SimGCD prediction requires student logits or features")
         return PredictionOutput(class_ids=logits.argmax(dim=-1), scores=logits)
+
+    def evaluation_diagnostics(
+        self,
+        output: ModelOutput,
+    ) -> Mapping[str, torch.Tensor]:
+        branch = output.branches["student"]
+        logits = branch.logits
+        if logits is None:
+            return {}
+        return {
+            "parametric": logits.argmax(dim=-1),
+        }
 
 
 def compute_simgcd_losses(
@@ -293,6 +349,84 @@ def compute_simgcd_losses(
     total_loss = total_loss + (1.0 - supervised_weight) * contrastive_loss
     total_loss = total_loss + supervised_weight * supervised_contrastive_loss
 
+    # -------------------------------------------------------------------------
+    # Pseudo-labeling (Semi-Supervised Consistency / Cross-Entropy on Unlabeled)
+    # -------------------------------------------------------------------------
+    enable_pseudo = bool(
+        config.get("enable_pseudo_labeling", False)
+        or context.get("enable_pseudo_labeling", False)
+    )
+    enable_novel = bool(
+        config.get("enable_novel_pseudo", False)
+        or context.get("enable_novel_pseudo", False)
+    )
+    epoch = int(context.get("epoch", 0))
+    total_epochs = int(context.get("total_epochs", 200))
+    pseudo_warmup = int(
+        config.get("pseudo_warmup_epochs", 0 if total_epochs <= 5 else 10)
+    )
+
+    unlabeled_mask = ~labeled_mask
+    pseudo_loss = logits.sum() * 0.0
+    n_pseudo_known = 0.0
+    n_pseudo_novel = 0.0
+
+    if enable_pseudo and epoch >= pseudo_warmup and unlabeled_mask.any() and num_views >= 2:
+        student_temp = float(config["student_temp"])
+        pseudo_temp = float(config.get("pseudo_temp", student_temp))
+        threshold = float(config.get("pseudo_confidence", 0.7))
+        known_class_count = int(context.get("num_known_classes", 100))
+
+        u_logits_v0 = logits_by_view[0][unlabeled_mask]
+        u_logits_v1 = logits_by_view[1][unlabeled_mask]
+
+        with torch.no_grad():
+            probs_v0 = F.softmax(u_logits_v0 / pseudo_temp, dim=-1)
+            conf_v0, pred_v0 = probs_v0.max(dim=-1)
+            mask_v0_known = (pred_v0 < known_class_count) & (conf_v0 >= threshold)
+            mask_v0_novel = (
+                (pred_v0 >= known_class_count) & (conf_v0 >= threshold)
+                if enable_novel
+                else torch.zeros_like(mask_v0_known)
+            )
+            valid_v0 = mask_v0_known | mask_v0_novel
+
+            probs_v1 = F.softmax(u_logits_v1 / pseudo_temp, dim=-1)
+            conf_v1, pred_v1 = probs_v1.max(dim=-1)
+            mask_v1_known = (pred_v1 < known_class_count) & (conf_v1 >= threshold)
+            mask_v1_novel = (
+                (pred_v1 >= known_class_count) & (conf_v1 >= threshold)
+                if enable_novel
+                else torch.zeros_like(mask_v1_known)
+            )
+            valid_v1 = mask_v1_known | mask_v1_novel
+
+        loss_0_to_1 = (
+            F.cross_entropy(
+                u_logits_v1[valid_v0] / student_temp,
+                pred_v0[valid_v0],
+            )
+            if valid_v0.any()
+            else logits.sum() * 0.0
+        )
+        loss_1_to_0 = (
+            F.cross_entropy(
+                u_logits_v0[valid_v1] / student_temp,
+                pred_v1[valid_v1],
+            )
+            if valid_v1.any()
+            else logits.sum() * 0.0
+        )
+
+        pseudo_loss = 0.5 * (loss_0_to_1 + loss_1_to_0)
+        n_pseudo_known = float(mask_v0_known.sum().item() + mask_v1_known.sum().item()) / 2.0
+        n_pseudo_novel = float(mask_v0_novel.sum().item() + mask_v1_novel.sum().item()) / 2.0
+
+        pseudo_weight = float(
+            config.get("pseudo_loss_weight", config.get("sup_weight", 0.35))
+        )
+        total_loss = total_loss + pseudo_weight * pseudo_loss
+
     return {
         "total": total_loss,
         "classification": classification_loss,
@@ -305,4 +439,8 @@ def compute_simgcd_losses(
         "contrastive_loss": contrastive_loss,
         "supervised_contrastive": supervised_contrastive_loss,
         "sup_con_loss": supervised_contrastive_loss,
+        "pseudo_loss": pseudo_loss,
+        "pseudo": pseudo_loss,
+        "n_pseudo_known": torch.tensor(n_pseudo_known, device=logits.device),
+        "n_pseudo_novel": torch.tensor(n_pseudo_novel, device=logits.device),
     }

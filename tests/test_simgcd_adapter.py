@@ -135,5 +135,147 @@ class SimGCDAdapterTests(unittest.TestCase):
         self.assertIsNotNone(projection.grad)
 
 
+
+    def test_predict_returns_normalized_features_when_eval_head_is_kmeans(self):
+        torch = self.torch
+        adapter = self.adapter_module.SimGCDAdapter(eval_head="kmeans")
+        features = torch.tensor([[3.0, 4.0], [1.0, 0.0]])
+        logits = torch.tensor([[0.1, 0.9], [0.8, 0.2]])
+        output = self.contracts.ModelOutput(
+            branches={
+                "student": self.contracts.BranchOutput(
+                    global_features=features,
+                    logits=logits,
+                )
+            }
+        )
+        prediction = adapter.predict(output)
+        self.assertIsNone(prediction.class_ids)
+        self.assertIsNotNone(prediction.features)
+        norms = prediction.features.norm(dim=-1)
+        torch.testing.assert_close(norms, torch.ones_like(norms))
+
+    def test_predict_returns_class_ids_when_eval_head_is_parametric(self):
+        torch = self.torch
+        adapter = self.adapter_module.SimGCDAdapter(eval_head="parametric")
+        features = torch.tensor([[3.0, 4.0], [1.0, 0.0]])
+        logits = torch.tensor([[0.1, 0.9], [0.8, 0.2]])
+        output = self.contracts.ModelOutput(
+            branches={
+                "student": self.contracts.BranchOutput(
+                    global_features=features,
+                    logits=logits,
+                )
+            }
+        )
+        prediction = adapter.predict(output)
+        self.assertIsNone(prediction.features)
+        self.assertIsNotNone(prediction.class_ids)
+        torch.testing.assert_close(prediction.class_ids, torch.tensor([1, 0]))
+
+    def test_evaluation_diagnostics_returns_parametric_logits_argmax(self):
+        torch = self.torch
+        adapter = self.adapter_module.SimGCDAdapter()
+        features = torch.tensor([[3.0, 4.0], [1.0, 0.0]])
+        logits = torch.tensor([[0.1, 0.9], [0.8, 0.2]])
+        output = self.contracts.ModelOutput(
+            branches={
+                "student": self.contracts.BranchOutput(
+                    global_features=features,
+                    logits=logits,
+                )
+            }
+        )
+        diag = adapter.evaluation_diagnostics(output)
+        self.assertIn("parametric", diag)
+        torch.testing.assert_close(diag["parametric"], torch.tensor([1, 0]))
+
+    def test_pseudo_labeling_disabled_yields_zero_pseudo_loss(self):
+        torch = self.torch
+        batch_size = 4
+        class_count = 5
+        projection = torch.randn(batch_size * 2, 12)
+        logits = torch.randn(batch_size * 2, class_count)
+        batch = self.contracts.TrainingBatch(
+            views=(torch.empty(batch_size, 1), torch.empty(batch_size, 1)),
+            known_targets=torch.tensor([0, 1, -1, -1]),
+            labeled_mask=torch.tensor([True, True, False, False]),
+            sample_ids=torch.arange(batch_size),
+        )
+        config = {
+            "student_temp": 0.1,
+            "memax_weight": 2.0,
+            "contrastive_temp": 1.0,
+            "supervised_contrastive_temp": 0.07,
+            "sup_weight": 0.35,
+            "enable_pseudo_labeling": False,
+        }
+        context = {
+            "batch_size": batch_size,
+            "num_views": 2,
+            "epoch": 0,
+            "cluster_criterion": lambda s, t, e: (s - t).square().mean(),
+            "teacher_logits": torch.randn_like(logits),
+            "num_known_classes": 3,
+        }
+        losses = self.adapter_module.compute_simgcd_losses(
+            projection=projection,
+            logits=logits,
+            batch=batch,
+            context=context,
+            config=config,
+        )
+        self.assertEqual(losses["pseudo_loss"].item(), 0.0)
+
+    def test_pseudo_labeling_enabled_computes_consistency_loss_on_unlabeled_samples(self):
+        torch = self.torch
+        batch_size = 2
+        class_count = 4
+        projection = torch.randn(batch_size * 2, 8)
+        # Sample 0 is labeled, Sample 1 is unlabeled
+        # Construct strong high-confidence predictions on unlabeled sample (class 1)
+        v0_logits = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.1, 0.3, 0.0, 0.0]])
+        v1_logits = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.2, 0.25, 0.0, 0.0]])
+        logits = torch.cat([v0_logits, v1_logits], dim=0).requires_grad_(True)
+        batch = self.contracts.TrainingBatch(
+            views=(torch.empty(batch_size, 1), torch.empty(batch_size, 1)),
+            known_targets=torch.tensor([0, -1]),
+            labeled_mask=torch.tensor([True, False]),
+            sample_ids=torch.arange(batch_size),
+        )
+        config = {
+            "student_temp": 0.1,
+            "memax_weight": 1.0,
+            "contrastive_temp": 1.0,
+            "supervised_contrastive_temp": 0.07,
+            "sup_weight": 0.35,
+            "enable_pseudo_labeling": True,
+            "enable_novel_pseudo": True,
+            "pseudo_confidence": 0.5,
+            "pseudo_warmup_epochs": 0,
+        }
+        context = {
+            "batch_size": batch_size,
+            "num_views": 2,
+            "epoch": 0,
+            "total_epochs": 1,
+            "cluster_criterion": lambda s, t, e: (s - t).square().mean(),
+            "teacher_logits": torch.randn_like(logits),
+            "num_known_classes": 2,
+        }
+        losses = self.adapter_module.compute_simgcd_losses(
+            projection=projection,
+            logits=logits,
+            batch=batch,
+            context=context,
+            config=config,
+        )
+        self.assertIn("pseudo_loss", losses)
+        self.assertGreater(losses["pseudo_loss"].item(), 0.0)
+        self.assertEqual(losses["n_pseudo_known"].item(), 1.0)
+        losses["total"].backward()
+        self.assertIsNotNone(logits.grad)
+
+
 if __name__ == "__main__":
     unittest.main()

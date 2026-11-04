@@ -47,6 +47,10 @@ class _CUBImages(Dataset):
 
     def _load_metadata(self) -> pd.DataFrame:
         dataset_dir = self.root / "CUB_200_2011"
+        if not (dataset_dir / "images.txt").is_file():
+            if (self.root / "images.txt").is_file():
+                dataset_dir = self.root
+                self.base_folder = Path("images")
         images = pd.read_csv(
             dataset_dir / "images.txt",
             sep=r"\s+",
@@ -100,6 +104,8 @@ class _CUBImages(Dataset):
     def __getitem__(self, index: int) -> tuple[Any, int, int]:
         row = self.data.iloc[index]
         image_path = self.root / self.base_folder / row.filepath
+        if not image_path.is_file() and (self.root / row.filepath).is_file():
+            image_path = self.root / row.filepath
         image = default_loader(str(image_path))
         if self.transform is not None:
             image = self.transform(image)
@@ -268,6 +274,14 @@ class CUBLongTailAdapter:
         unlabeled_novel_indices = _load_split_tensor(
             split_directory / "unl_unk_uq_idxs.pt"
         )
+        print("=" * 65)
+        print(f"[DATASET PROTOCOL] Dataset: CUB-200 | Split: {split_directory.name}")
+        print(f" - Splits Directory: {split_directory}")
+        print(f" - Labeled Samples:         {len(labeled_indices)}")
+        print(f" - Unlabeled Known Samples: {len(unlabeled_known_indices)}")
+        print(f" - Unlabeled Novel Samples: {len(unlabeled_novel_indices)}")
+        print(f" - Total Train Samples:     {len(labeled_indices) + len(unlabeled_known_indices) + len(unlabeled_novel_indices)}")
+        print("=" * 65)
 
         train_transform, test_transform = _make_transforms(
             image_size,

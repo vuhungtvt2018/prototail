@@ -76,8 +76,11 @@ def estimate_class_frequencies(
             images = images.to(device, non_blocking=True)
             batch_targets = torch.as_tensor(batch_targets).cpu().numpy()
             batch_labeled = torch.as_tensor(batch_labeled).bool().cpu().numpy()
+            backbone = getattr(model, "contrastive_backbone", getattr(model, "backbone", None))
+            if backbone is None:
+                raise ValueError("Model has no backbone for feature extraction")
             global_features, _ = forward_global_and_patches(
-                model.contrastive_backbone,
+                backbone,
                 images,
                 finetune_from_block=finetune_from_block,
             )

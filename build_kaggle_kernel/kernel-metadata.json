@@ -1,0 +1,16 @@
+{
+  "id": "sanjivinsmoker/prototail-simgcd-cars-full-imb50",
+  "title": "ProtoTail simgcd_cars_Full_imb50",
+  "code_file": "run_script.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "nguyntrnminhtm/gcd-data"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

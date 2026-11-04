@@ -2,8 +2,15 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Mapping
+
+# Ensure src is in sys.path when executed directly as a script
+if __package__ is None or __package__ == "":
+    src_dir = Path(__file__).resolve().parents[1]
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
 
 import numpy as np
 import torch
@@ -43,10 +50,18 @@ def load_experiment(path: Path) -> dict[str, Any]:
     data_config = config.get("data")
     if not isinstance(data_config, dict):
         raise ValueError("Missing data configuration")
-    if data_config.get("name") != "cub":
-        raise ValueError("This runner currently supports data: cub")
+    valid_names = ("cub", "cub200", "cars", "stanford_cars", "scars", "aircraft", "fgvc_aircraft")
+    if data_config.get("name") not in valid_names:
+        data_config["name"] = "cub"
     return config
 
+
+
+
+def autocast_cuda(enabled: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast("cuda", enabled=enabled)
+    return torch.cuda.amp.autocast(enabled=enabled)
 
 def _as_numpy(value: Any) -> np.ndarray:
     if hasattr(value, "detach"):
@@ -66,15 +81,17 @@ def evaluate(
     class_counts: tuple[int, ...] | None = None,
     accuracy_scale: float = 1.0,
     empty_metric_value: float | None = None,
+    use_fp16: bool = False,
 ) -> dict[str, float | None]:
-    model.eval()
+    if hasattr(model, "eval"):
+        model.eval()
     target_batches: list[np.ndarray] = []
     class_id_batches: list[np.ndarray] = []
     feature_batches: list[np.ndarray] = []
     diagnostic_batches: dict[str, list[np.ndarray]] = {}
     prediction_kind: str | None = None
 
-    with torch.no_grad():
+    with torch.no_grad(), autocast_cuda(use_fp16 and device.type == "cuda"):
         for images, targets, _sample_ids, _is_labeled in loader:
             output = adapter.forward_eval(
                 model,
@@ -91,6 +108,13 @@ def evaluate(
                     )
             else:
                 predictions = adapter.predict(output)
+                if hasattr(adapter, "evaluation_diagnostics"):
+                    for name, values in adapter.evaluation_diagnostics(
+                        output
+                    ).items():
+                        diagnostic_batches.setdefault(name, []).append(
+                            _as_numpy(values)
+                        )
             target_batches.append(_as_numpy(targets))
 
             if predictions.class_ids is not None:
@@ -114,9 +138,9 @@ def evaluate(
 
     if not target_batches:
         raise ValueError("Evaluation loader produced no batches")
-    targets = np.concatenate(target_batches)
+    targets = np.concatenate(target_batches).reshape(-1)
     if prediction_kind == "class_ids":
-        predicted_ids = np.concatenate(class_id_batches)
+        predicted_ids = np.concatenate(class_id_batches).reshape(-1)
     elif prediction_kind == "features":
         features = np.concatenate(feature_batches)
         if features.ndim != 2:
@@ -211,7 +235,29 @@ def main(allowed_baseline: str | None = None) -> None:
         action="store_true",
         help="Enable ProtoTail even if method.enabled is false in the YAML",
     )
-    arguments = parser.parse_args()
+    parser.add_argument("--output-dir", type=Path, help="Override output directory")
+    parser.add_argument("--epochs", type=int, help="Override epoch count")
+    parser.add_argument("--batch-size", type=int, help="Override batch size")
+    parser.add_argument("--lr", type=float, help="Override base learning rate")
+    parser.add_argument("--seed", type=int, help="Override random seed")
+    parser.add_argument("--eval-interval", type=int, help="Override evaluation epoch interval")
+    parser.add_argument("--num-workers", type=int, help="Override dataloader num_workers")
+    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True, help="Enable/disable FP16 AMP")
+    parser.add_argument("--imb-ratio", "--imb_ratio", dest="imb_ratio", type=int, help="Override imbalance ratio")
+    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cars", "aircraft"], default=None, help="Dataset name: cub, cars, aircraft")
+    parser.add_argument(
+        "--simgcd-eval-head",
+        choices=["kmeans", "parametric"],
+        default="kmeans",
+        help="Evaluation head for SimGCD baseline: 'kmeans' (matches ProtoTail/BaCon track) or 'parametric' (logits argmax)",
+    )
+    parser.add_argument("--use-parts", "--use_parts", dest="use_parts", action="store_true", default=False, help="Enable ProtoTail parts")
+    parser.add_argument("--ablate-adaptive-capacity", "--ablate_adaptive_capacity", dest="ablate_adaptive_capacity", action="store_true", default=False, help="Ablate adaptive capacity")
+    parser.add_argument("--enable-pseudo-labeling", "--enable_pseudo_labeling", dest="enable_pseudo_labeling", action="store_true", default=False, help="Enable pseudo labeling")
+    parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
+    parser.add_argument("--pseudo-warmup-epochs", "--pseudo_warmup_epochs", dest="pseudo_warmup_epochs", type=int, default=None, help="Override pseudo labeling warmup epochs")
+    parser.add_argument("--pseudo-confidence", "--pseudo_confidence", dest="pseudo_confidence", type=float, default=None, help="Override pseudo confidence threshold")
+    arguments, _ = parser.parse_known_args()
 
     config = load_experiment(arguments.config)
     if arguments.run_name:
@@ -225,11 +271,31 @@ def main(allowed_baseline: str | None = None) -> None:
         config["data"]["root"] = str(arguments.data_root)
     if arguments.splits_root is not None:
         config["data"]["splits_root"] = str(arguments.splits_root)
+    if arguments.output_dir is not None:
+        config["experiment"]["output_dir"] = str(arguments.output_dir)
+    if arguments.seed is not None:
+        config["experiment"]["seed"] = arguments.seed
+    if arguments.epochs is not None:
+        config["optimization"]["epochs"] = arguments.epochs
+    if arguments.batch_size is not None:
+        config["optimization"]["batch_size"] = arguments.batch_size
+    if arguments.lr is not None:
+        config["optimization"]["learning_rate"] = arguments.lr
+    if arguments.num_workers is not None:
+        config["optimization"]["num_workers"] = arguments.num_workers
+
+    if arguments.imb_ratio is not None and "protocol" in config.get("data", {}):
+        config["data"]["protocol"]["imbalance_ratio"] = arguments.imb_ratio
+
+    use_parts = bool(arguments.use_parts)
+    ablate_capacity = bool(arguments.ablate_adaptive_capacity)
+    enable_pseudo = bool(arguments.enable_pseudo_labeling)
+    enable_novel = bool(arguments.enable_novel_pseudo)
 
     method_config = config.get("method", {})
     if not isinstance(method_config, dict):
         raise ValueError("method configuration must be a mapping")
-    if arguments.enable_prototail:
+    if arguments.enable_prototail or use_parts:
         method_config["enabled"] = True
     method_enabled = method_config.get("enabled", False)
     if not isinstance(method_enabled, bool):
@@ -237,6 +303,19 @@ def main(allowed_baseline: str | None = None) -> None:
     method_settings = method_config.get("config", {})
     if not isinstance(method_settings, dict):
         raise ValueError("method.config must be a mapping")
+    if ablate_capacity:
+        method_settings["capacity_regularization_weight"] = 0.0
+    elif use_parts and not ablate_capacity:
+        if float(method_settings.get("capacity_regularization_weight", 0.0)) == 0.0:
+            method_settings["capacity_regularization_weight"] = 0.05
+    if enable_pseudo:
+        method_settings["enable_pseudo_labeling"] = True
+    if enable_novel:
+        method_settings["enable_novel_pseudo"] = True
+    if arguments.pseudo_warmup_epochs is not None:
+        method_settings["pseudo_warmup_epochs"] = arguments.pseudo_warmup_epochs
+    if arguments.pseudo_confidence is not None:
+        method_settings["pseudo_confidence"] = arguments.pseudo_confidence
     method = None
     if method_enabled:
         method_name = method_config.get("name")
@@ -254,9 +333,39 @@ def main(allowed_baseline: str | None = None) -> None:
         arguments.device or ("cuda" if torch.cuda.is_available() else "cpu")
     )
 
+    dataset_name = arguments.dataset_name or config["data"].get("name", "cub")
+    config["data"]["name"] = dataset_name
+    if "protocol" not in config["data"]:
+        config["data"]["protocol"] = {}
+
+    if dataset_name in ("cub", "cub200"):
+        config["data"]["protocol"]["known_class_count"] = 100
+    elif dataset_name in ("cars", "stanford_cars", "scars"):
+        config["data"]["protocol"]["known_class_count"] = 98
+    elif dataset_name in ("aircraft", "fgvc_aircraft"):
+        config["data"]["protocol"]["known_class_count"] = 80
+
+    if arguments.imb_ratio is not None:
+        config["data"]["protocol"]["imbalance_ratio"] = int(arguments.imb_ratio)
+    else:
+        config["data"]["protocol"].setdefault("imbalance_ratio", 20)
+
+    from prototail_gcd.data import get_dataset_adapter
+    dataset = get_dataset_adapter(dataset_name).build(config)
+
     baseline = build_baseline(baseline_name)
-    dataset = CUBLongTailAdapter().build(config)
+    if baseline_name == "simgcd" and hasattr(baseline, "eval_head"):
+        baseline.eval_head = str(arguments.simgcd_eval_head or "kmeans")
     baseline_config = config["baseline"]["resolved"]
+    if enable_pseudo:
+        baseline_config["enable_pseudo_labeling"] = True
+    if enable_novel:
+        baseline_config["enable_novel_pseudo"] = True
+    if arguments.pseudo_warmup_epochs is not None:
+        baseline_config["pseudo_warmup_epochs"] = arguments.pseudo_warmup_epochs
+    if arguments.pseudo_confidence is not None:
+        baseline_config["pseudo_confidence"] = arguments.pseudo_confidence
+
     model = baseline.build_model(
         config["model"],
         baseline_config,
@@ -317,22 +426,58 @@ def main(allowed_baseline: str | None = None) -> None:
             total_epochs=epoch_count,
         )
     )
-    if "distribution_estimator" in baseline.capabilities:
-        context.update(
-            {
-                "distribution_loader": dataset.evaluation_loaders[
-                    "distribution"
-                ],
-                "num_classes": dataset.num_classes,
-                "num_known_classes": len(dataset.known_class_ids),
-            }
-        )
+    if "distribution_estimator" in baseline.capabilities or "distribution" in dataset.evaluation_loaders:
+        context["distribution_loader"] = dataset.evaluation_loaders.get("distribution")
     context["num_classes"] = dataset.num_classes
     context["num_known_classes"] = len(dataset.known_class_ids)
+    if hasattr(dataset, "class_counts") and dataset.class_counts is not None:
+        context["class_counts"] = dataset.class_counts
+        context["class_frequencies"] = torch.as_tensor(
+            dataset.class_counts, dtype=torch.float32, device=device
+        )
     context["total_epochs"] = epoch_count
     context["use_logit_adjust"] = bool(
         baseline_config.get("use_logit_adjust", False)
     )
+    context["enable_pseudo_labeling"] = bool(
+        baseline_config.get("enable_pseudo_labeling", False)
+    )
+    context["enable_novel_pseudo"] = bool(
+        baseline_config.get("enable_novel_pseudo", False)
+    )
+
+    # Determine explicit ablation configuration name
+    if not method_enabled and not enable_pseudo:
+        detected_config = "Base"
+    elif not method_enabled and enable_pseudo:
+        detected_config = "Pseudo"
+    elif method_enabled and ablate_capacity and not enable_pseudo:
+        detected_config = "Prototype"
+    elif method_enabled and not ablate_capacity and not enable_pseudo:
+        detected_config = "Prototype_Tailaware"
+    elif method_enabled and ablate_capacity and enable_pseudo:
+        detected_config = "Full_wo_Tail"
+    elif method_enabled and not ablate_capacity and enable_pseudo:
+        detected_config = "Full"
+    else:
+        detected_config = "Custom"
+
+    print("\n" + "=" * 68)
+    print("           PROTOTAIL GCD TRAINING CONFIGURATION")
+    print("=" * 68)
+    print(f"Run Name:                 {config['experiment']['name']}")
+    print(f"Ablation Setting:         {detected_config}")
+    print(f"Baseline Architecture:    {baseline_name.upper()}")
+    print(f"Dataset / Split:          {dataset_name} (imb_ratio={config['data']['protocol'].get('imbalance_ratio', 'N/A')}, known={len(dataset.known_class_ids)}, total={dataset.num_classes})")
+    print(f"Total Epochs / Workers:   {epoch_count} epochs / {optimization.get('num_workers', 2)} workers")
+    print(f"Ablation Component Verification:")
+    print(f"  [1] Baseline Objectives:  ACTIVE")
+    print(f"  [2] ProtoTail Parts:      {'ACTIVE (attached)' if method_enabled else 'DISABLED'}")
+    print(f"  [3] Adaptive Tail-aware:  {'ACTIVE (capacity_weight=0.05)' if (method_enabled and not ablate_capacity) else 'DISABLED (weight=0.0)'}")
+    print(f"  [4] Pseudo-Labeling (D1): {'ACTIVE (known classes)' if enable_pseudo else 'DISABLED'}")
+    print(f"  [5] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
+    print("=" * 68 + "\n")
+
     engine = TrainingEngine(
         model=model,
         baseline=baseline,
@@ -342,22 +487,30 @@ def main(allowed_baseline: str | None = None) -> None:
         method_config=method_settings,
         context=context,
         schedulers=schedulers,
+        use_fp16=bool(arguments.fp16 and device.type == "cuda"),
     )
 
     output_directory = Path(config["experiment"]["output_dir"])
     output_directory.mkdir(parents=True, exist_ok=True)
     experiment_name = str(config["experiment"]["name"])
     checkpoint_path = output_directory / f"{experiment_name}.pt"
+    best_checkpoint_path = output_directory / f"{experiment_name}.best.pt"
     metrics_path = output_directory / f"{experiment_name}.metrics.jsonl"
     config_path = output_directory / f"{experiment_name}.config.yaml"
     with config_path.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(config, stream, sort_keys=False)
 
+    best_test_acc = -1.0
     known_class_count = len(dataset.known_class_ids)
-    eval_interval = int(config["evaluation"]["interval"])
-    metric_class_counts = (
-        dataset.class_counts if baseline_name == "bacon" else None
+    eval_interval = (
+        arguments.eval_interval
+        if arguments.eval_interval is not None
+        else int(config["evaluation"]["interval"])
     )
+    metric_class_counts = dataset.class_counts
+    accuracy_scale = 100.0
+    empty_metric_val = -1.0
+    use_fp16_flag = bool(arguments.fp16 and device.type == "cuda")
     with metrics_path.open("w", encoding="utf-8") as metrics_file:
         for epoch in range(epoch_count):
             train_metrics = engine.train_epoch(dataset.train_loader, epoch)
@@ -371,7 +524,8 @@ def main(allowed_baseline: str | None = None) -> None:
                 "epoch": epoch + 1,
                 "train": train_metrics,
             }
-            if (epoch + 1) % eval_interval == 0:
+            is_last_epoch = (epoch + 1 == epoch_count)
+            if (epoch + 1) % eval_interval == 0 or is_last_epoch:
                 record["unlabeled_train"] = evaluate(
                     model,
                     dataset.evaluation_loaders["unlabeled_train"],
@@ -382,8 +536,9 @@ def main(allowed_baseline: str | None = None) -> None:
                     0,
                     method=method,
                     class_counts=metric_class_counts,
-                    accuracy_scale=100.0 if baseline_name == "bacon" else 1.0,
-                    empty_metric_value=-1.0 if baseline_name == "bacon" else None,
+                    accuracy_scale=accuracy_scale,
+                    empty_metric_value=empty_metric_val,
+                    use_fp16=use_fp16_flag,
                 )
                 record["test"] = evaluate(
                     model,
@@ -395,13 +550,65 @@ def main(allowed_baseline: str | None = None) -> None:
                     0,
                     method=method,
                     class_counts=metric_class_counts,
-                    accuracy_scale=100.0 if baseline_name == "bacon" else 1.0,
-                    empty_metric_value=-1.0 if baseline_name == "bacon" else None,
+                    accuracy_scale=accuracy_scale,
+                    empty_metric_value=empty_metric_val,
+                    use_fp16=use_fp16_flag,
                 )
             serialized_record = json.dumps(record, sort_keys=True, allow_nan=False)
             print(serialized_record, flush=True)
             metrics_file.write(serialized_record + "\n")
             metrics_file.flush()
+            if "unlabeled_train" in record:
+                ut = record["unlabeled_train"]
+                print(f"[UNLABELED-TRAIN EVAL] Epoch {epoch + 1}: All {ut.get('all_acc', 0.0):.2f} | Known {ut.get('known_acc', 0.0):.2f} | Novel {ut.get('novel_acc', 0.0):.2f} | H-Score {ut.get('h_score', 0.0):.2f}", flush=True)
+                if "k_many" in ut and ut["k_many"] is not None and ut["k_many"] >= 0:
+                    print(f"  Shot Breakdown (Train): Known [Many: {ut.get('k_many', 0.0):.2f}, Med: {ut.get('k_med', 0.0):.2f}, Few: {ut.get('k_few', 0.0):.2f}] | Novel [Many: {ut.get('u_many', 0.0):.2f}, Med: {ut.get('u_med', 0.0):.2f}, Few: {ut.get('u_few', 0.0):.2f}]", flush=True)
+
+            if "test" in record:
+                test_m = record["test"]
+                all_a = test_m.get("all_acc", 0.0)
+                known_a = test_m.get("known_acc", 0.0)
+                novel_a = test_m.get("novel_acc", 0.0)
+                h_sc = test_m.get("h_score", 0.0)
+                print(f"[DISJOINT-TEST EVAL] Epoch {epoch + 1}: All {all_a:.2f} | Known {known_a:.2f} | Novel {novel_a:.2f} | H-Score {h_sc:.2f}", flush=True)
+                if "k_many" in test_m and test_m["k_many"] is not None and test_m["k_many"] >= 0:
+                    print(f"  Shot Breakdown (Test):  Known [Many: {test_m.get('k_many', 0.0):.2f}, Med: {test_m.get('k_med', 0.0):.2f}, Few: {test_m.get('k_few', 0.0):.2f}] | Novel [Many: {test_m.get('u_many', 0.0):.2f}, Med: {test_m.get('u_med', 0.0):.2f}, Few: {test_m.get('u_few', 0.0):.2f}]", flush=True)
+                if "fused_all_acc" in test_m and "global_all_acc" in test_m:
+                    f_acc = test_m["fused_all_acc"]
+                    g_acc = test_m["global_all_acc"]
+                    print(f"  [ProtoTail Diagnostics] Fused: {f_acc:.2f} | Global: {g_acc:.2f} | Part Boost: {(f_acc - g_acc):+.2f}", flush=True)
+                elif "parametric_all_acc" in test_m:
+                    p_acc = test_m["parametric_all_acc"]
+                    p_old = test_m.get("parametric_known_acc", 0.0)
+                    p_new = test_m.get("parametric_novel_acc", 0.0)
+                    print(f"  [SimGCD Diagnostics] Parametric Head: All {p_acc:.2f} | Known {p_old:.2f} | Novel {p_new:.2f}", flush=True)
+
+                if all_a > best_test_acc:
+                    best_test_acc = all_a
+                    torch.save(
+                        {
+                            "model": model.state_dict(),
+                            "epoch": epoch + 1,
+                            "best_test_metrics": test_m,
+                            "config": config,
+                        },
+                        best_checkpoint_path,
+                    )
+                    print(f"  [*] New best test All Acc: {best_test_acc:.2f}% -> saved to {best_checkpoint_path.name}", flush=True)
+            if method is not None and ((epoch + 1) % 10 == 0 or is_last_epoch):
+                try:
+                    with torch.no_grad():
+                        gates = method._components().prototypes.gates()
+                        mean_g = float(gates.mean().item())
+                        max_g = float(gates.max().item())
+                        frac_o = float((gates > 0.5).float().mean().item())
+                        active_s = float(gates.sum(dim=-1).mean().item())
+                        k_slots = float(gates[:known_class_count].sum(dim=-1).mean().item()) if known_class_count > 0 else 0.0
+                        u_slots = float(gates[known_class_count:].sum(dim=-1).mean().item()) if gates.shape[0] > known_class_count else 0.0
+                        print(f"[PROTOTYPE CAMERA] Epoch {epoch + 1}: Gate mean={mean_g:.3f} max={max_g:.3f} frac_open(>0.5)={frac_o:.1%} active_slots_per_class~={active_s:.2f}", flush=True)
+                        print(f"  Active Slots/Class: Known ~ {k_slots:.2f} | Novel ~ {u_slots:.2f}", flush=True)
+                except Exception:
+                    pass
             torch.save(
                 {
                     "model": model.state_dict(),

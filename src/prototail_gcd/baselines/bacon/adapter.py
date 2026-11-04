@@ -244,6 +244,79 @@ class BaConAdapter:
                 * supervised_contrastive
             )
 
+        # -------------------------------------------------------------------------
+        # Pseudo-labeling (Semi-Supervised Consistency / Cross-Entropy on Unlabeled)
+        # -------------------------------------------------------------------------
+        enable_pseudo = bool(
+            config.get("enable_pseudo_labeling", False)
+            or context.get("enable_pseudo_labeling", False)
+        )
+        enable_novel = bool(
+            config.get("enable_novel_pseudo", False)
+            or context.get("enable_novel_pseudo", False)
+        )
+        epoch = int(context.get("epoch", 0))
+        total_epochs = int(context.get("total_epochs", 200))
+        pseudo_warmup = int(
+            config.get("pseudo_warmup_epochs", 0 if total_epochs <= 5 else 10)
+        )
+
+        unlabeled_mask = ~mask
+        pseudo_loss = class_logits.sum() * 0.0
+
+        if enable_pseudo and epoch >= pseudo_warmup and unlabeled_mask.any() and num_views >= 2:
+            student_temp = float(config["student_temp"])
+            pseudo_temp = float(config.get("pseudo_temp", student_temp))
+            threshold = float(config.get("pseudo_confidence", 0.7))
+            known_class_count = int(context.get("num_known_classes", 100))
+
+            u_logits_v0 = logits_by_view[0][unlabeled_mask]
+            u_logits_v1 = logits_by_view[1][unlabeled_mask]
+
+            with torch.no_grad():
+                probs_v0 = F.softmax(u_logits_v0 / pseudo_temp, dim=-1)
+                conf_v0, pred_v0 = probs_v0.max(dim=-1)
+                mask_0_known = (pred_v0 < known_class_count) & (conf_v0 >= threshold)
+                mask_0_novel = (
+                    (pred_v0 >= known_class_count) & (conf_v0 >= threshold)
+                    if enable_novel
+                    else torch.zeros_like(mask_0_known)
+                )
+                valid_v0 = mask_0_known | mask_0_novel
+
+                probs_v1 = F.softmax(u_logits_v1 / pseudo_temp, dim=-1)
+                conf_v1, pred_v1 = probs_v1.max(dim=-1)
+                mask_1_known = (pred_v1 < known_class_count) & (conf_v1 >= threshold)
+                mask_1_novel = (
+                    (pred_v1 >= known_class_count) & (conf_v1 >= threshold)
+                    if enable_novel
+                    else torch.zeros_like(mask_1_known)
+                )
+                valid_v1 = mask_1_known | mask_1_novel
+
+            loss_0_to_1 = (
+                F.cross_entropy(
+                    u_logits_v1[valid_v0] / student_temp,
+                    pred_v0[valid_v0],
+                )
+                if valid_v0.any()
+                else class_logits.sum() * 0.0
+            )
+            loss_1_to_0 = (
+                F.cross_entropy(
+                    u_logits_v0[valid_v1] / student_temp,
+                    pred_v1[valid_v1],
+                )
+                if valid_v1.any()
+                else class_logits.sum() * 0.0
+            )
+
+            pseudo_loss = 0.5 * (loss_0_to_1 + loss_1_to_0)
+            pseudo_weight = float(
+                config.get("pseudo_loss_weight", config.get("supervised_weight", 0.35))
+            )
+            classification_objective = classification_objective + pseudo_weight * pseudo_loss
+
         return {
             "total": classification_objective + contrastive_objective,
             "loss_ce": classification_objective,
@@ -259,6 +332,8 @@ class BaConAdapter:
             "supervised_contrastive": supervised_contrastive,
             "sup_con_loss": supervised_contrastive,
             "soft_contrastive": soft_contrastive,
+            "pseudo_loss": pseudo_loss,
+            "pseudo": pseudo_loss,
             "classification_objective": classification_objective,
             "contrastive_objective": contrastive_objective,
         }
@@ -333,4 +408,6 @@ class BaConAdapter:
 
     def predict(self, output: ModelOutput) -> PredictionOutput:
         features = output.branches["contrastive"].global_features
+        if features is not None:
+            features = F.normalize(features, dim=-1)
         return PredictionOutput(class_ids=None, features=features)

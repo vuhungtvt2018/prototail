@@ -56,6 +56,12 @@ def clustering_metrics(
     metrics["all"] = metrics["all_acc"]
     metrics["old"] = metrics["known_acc"]
     metrics["new"] = metrics["novel_acc"]
+    k_acc = metrics["known_acc"]
+    n_acc = metrics["novel_acc"]
+    if k_acc is not None and n_acc is not None and (k_acc + n_acc) > 0:
+        metrics["h_score"] = float(2.0 * k_acc * n_acc / (k_acc + n_acc))
+    else:
+        metrics["h_score"] = 0.0
     if class_counts is not None:
         counts = np.asarray(class_counts, dtype=np.int64)
         if counts.ndim != 1 or counts.size <= int(targets.max()):

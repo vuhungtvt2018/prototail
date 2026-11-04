@@ -7,6 +7,19 @@ import torch
 from prototail_gcd.contracts import TrainingBatch
 
 
+
+
+def make_grad_scaler(enabled: bool) -> Any:
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler("cuda", enabled=enabled)
+    return torch.cuda.amp.GradScaler(enabled=enabled)
+
+
+def autocast_cuda(enabled: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast("cuda", enabled=enabled)
+    return torch.cuda.amp.autocast(enabled=enabled)
+
 class TrainingEngine:
     def __init__(
         self,
@@ -19,6 +32,7 @@ class TrainingEngine:
         method_config: Mapping[str, Any] | None = None,
         context: Mapping[str, Any] | None = None,
         schedulers: Mapping[str, Any] | None = None,
+        use_fp16: bool = False,
     ) -> None:
         if not optimizers:
             raise ValueError("at least one optimizer is required")
@@ -30,6 +44,8 @@ class TrainingEngine:
         self.method_config = dict(method_config or {})
         self.context = dict(context or {})
         self.schedulers = dict(schedulers or {})
+        self.use_fp16 = use_fp16
+        self.scaler = make_grad_scaler(enabled=use_fp16)
         if set(self.schedulers) - set(self.optimizers):
             raise ValueError("each scheduler must match a named optimizer")
         self._validate_disjoint_optimizers()
@@ -76,63 +92,70 @@ class TrainingEngine:
         for optimizer in self.optimizers.values():
             optimizer.zero_grad(set_to_none=True)
 
-        output = self.baseline.forward(self.model, batch)
-        if self.method is not None:
-            output = self.method.augment_output(output)
-        step_context = {**self.context, "epoch": epoch}
-        losses = self.baseline.compute_losses(
-            output,
-            batch,
-            step_context,
-            self.baseline_config,
-        )
-        total_loss = losses.get("total")
-        if not isinstance(total_loss, torch.Tensor) or total_loss.ndim != 0:
-            raise TypeError(
-                "baseline losses must contain a scalar tensor named 'total'"
-            )
-        if self.method is not None:
-            method_losses = self.method.compute_losses(
+        with autocast_cuda(enabled=self.use_fp16 and device.type == "cuda"):
+            output = self.baseline.forward(self.model, batch)
+            if self.method is not None:
+                output = self.method.augment_output(output)
+            step_context = {**self.context, "epoch": epoch}
+            losses = self.baseline.compute_losses(
                 output,
                 batch,
                 step_context,
+                self.baseline_config,
             )
-            method_total = method_losses.get("total")
-            if (
-                not isinstance(method_total, torch.Tensor)
-                or method_total.ndim != 0
-            ):
+            total_loss = losses.get("total")
+            if not isinstance(total_loss, torch.Tensor) or total_loss.ndim != 0:
                 raise TypeError(
-                    "method losses must contain a scalar tensor named 'total'"
+                    "baseline losses must contain a scalar tensor named 'total'"
                 )
-            losses = {
-                **losses,
-                **{
-                    (
-                        name
-                        if name
-                        in {
-                            "aux_fused",
-                            "fused_ce",
-                            "gate",
-                            "gate_max",
-                            "dist_gate",
-                            "spatial",
-                        }
-                        else f"{self.method.name}_{name}"
-                    ): value
-                    for name, value in method_losses.items()
-                    if name != "total"
-                },
-                "total": total_loss + method_total,
-            }
-            if "loss_ce" in losses:
-                losses["loss_ce"] = losses["loss_ce"] + method_total
-            total_loss = losses["total"]
+            if self.method is not None:
+                method_losses = self.method.compute_losses(
+                    output,
+                    batch,
+                    step_context,
+                )
+                method_total = method_losses.get("total")
+                if (
+                    not isinstance(method_total, torch.Tensor)
+                    or method_total.ndim != 0
+                ):
+                    raise TypeError(
+                        "method losses must contain a scalar tensor named 'total'"
+                    )
+                losses = {
+                    **losses,
+                    **{
+                        (
+                            name
+                            if name
+                            in {
+                                "aux_fused",
+                                "fused_ce",
+                                "gate",
+                                "gate_max",
+                                "dist_gate",
+                                "spatial",
+                            }
+                            else f"{self.method.name}_{name}"
+                        ): value
+                        for name, value in method_losses.items()
+                        if name != "total"
+                    },
+                    "total": total_loss + method_total,
+                }
+                if "loss_ce" in losses:
+                    losses["loss_ce"] = losses["loss_ce"] + method_total
+                total_loss = losses["total"]
 
-        total_loss.backward()
-        for optimizer in self.optimizers.values():
-            optimizer.step()
+        if self.use_fp16 and device.type == "cuda":
+            self.scaler.scale(total_loss).backward()
+            for optimizer in self.optimizers.values():
+                self.scaler.step(optimizer)
+            self.scaler.update()
+        else:
+            total_loss.backward()
+            for optimizer in self.optimizers.values():
+                optimizer.step()
         after_step = getattr(self.baseline, "after_optimizer_step", None)
         if after_step is not None:
             after_step(

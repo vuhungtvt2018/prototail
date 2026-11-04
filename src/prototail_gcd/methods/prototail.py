@@ -315,6 +315,8 @@ class ProtoTailPlugin:
         if capacity_weight > 0 and regularize_gates:
             frequencies = context.get("estimated_frequencies")
             if frequencies is None:
+                frequencies = context.get("class_frequencies")
+            if frequencies is None:
                 raise RuntimeError(
                     "ProtoTail capacity regularization requires "
                     "estimated_frequencies"
@@ -396,6 +398,8 @@ class ProtoTailPlugin:
         if is_simgcd:
             losses["aux_fused"] = losses["part_classification"]
             losses["gate"] = losses["gate_regularization"]
+            if capacity_weight > 0:
+                losses["dist_gate"] = capacity_loss
         else:
             losses["fused_ce"] = losses["part_classification"]
             losses["gate_max"] = gates.max(dim=-1).values.mean()
