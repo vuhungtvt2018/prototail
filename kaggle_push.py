@@ -155,6 +155,15 @@ def main():
         help="Known frequency mapping mode ('direct_hungarian' or 'bacon_rank')",
     )
     parser.add_argument(
+        "--pseudo-mode", choices=["paper", "legacy_ce"], default="paper",
+        help="Paper persistent D1/D2 mode is default for Full and Pseudo",
+    )
+    parser.add_argument(
+        "--novel-frequency-mapping",
+        choices=["auto", "bacon_rank", "output_aligned"],
+        default="auto",
+    )
+    parser.add_argument(
         "--require-paper-dual-selection",
         action="store_true",
         default=False,
@@ -195,8 +204,12 @@ def main():
         flags.append("--gate-warm-start-from-support")
     if args.known_frequency_mapping != "direct_hungarian":
         flags.extend(["--known-frequency-mapping", args.known_frequency_mapping])
+    if args.novel_frequency_mapping != "auto":
+        flags.extend(["--novel-frequency-mapping", args.novel_frequency_mapping])
     if args.require_paper_dual_selection:
         flags.append("--require-paper-dual-selection")
+    if args.config in ("Full", "Full_wo_Tail", "Pseudo"):
+        flags.extend(["--pseudo-mode", args.pseudo_mode])
 
     exp_name = f"{args.baseline}_{args.dataset_name}_{args.config}_imb{args.imb_ratio}"
     kernel_slug = f"prototail-{args.baseline}-{args.dataset_name}-{args.config.lower()}-imb{args.imb_ratio}".replace("_", "-")

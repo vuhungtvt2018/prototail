@@ -224,6 +224,8 @@ class SimGCDAdapter:
                 kmeans_n_init=int(context.get("kmeans_n_init", 10)),
                 kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
                 known_frequency_mapping=str(context.get("known_frequency_mapping", "direct_hungarian")),
+                novel_frequency_mapping=str(context.get("novel_frequency_mapping", "bacon_rank")),
+                classifier_temperature=float(config.get("student_temp", 0.1)),
             )
         finally:
             model.train()

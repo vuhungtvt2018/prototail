@@ -61,6 +61,14 @@ class PartPrototypeBank(nn.Module):
             "prototypes",
             prototypes.view(num_classes, num_slots, feature_dim),
         )
+        self.register_buffer(
+            "initial_prototypes",
+            prototypes.view(num_classes, num_slots, feature_dim).clone(),
+        )
+        self.register_buffer(
+            "update_counts",
+            torch.zeros(num_classes, dtype=torch.long),
+        )
         self.gate_logits = nn.Parameter(torch.zeros(num_classes, num_slots))
         nn.init.constant_(self.gate_logits, -1.0)
 
@@ -126,6 +134,7 @@ class PartPrototypeBank(nn.Module):
                 + (1.0 - momentum) * centroid,
                 dim=-1,
             )
+            self.update_counts[class_index] += 1
 
     @torch.no_grad()
     def update_novel(
@@ -150,6 +159,31 @@ class PartPrototypeBank(nn.Module):
                 + (1.0 - momentum) * centroid,
                 dim=-1,
             )
+            self.update_counts[class_index] += 1
+
+    @torch.no_grad()
+    def prototype_diagnostics(self, num_known_classes: int) -> dict[str, Any]:
+        curr_norm = F.normalize(self.prototypes, dim=-1)
+        init_norm = F.normalize(self.initial_prototypes, dim=-1)
+        cos_sim = (curr_norm * init_norm).sum(dim=-1).mean(dim=-1)
+        drift = 1.0 - cos_sim
+
+        k_cnt = self.update_counts[:num_known_classes]
+        u_cnt = self.update_counts[num_known_classes:]
+        k_drift = drift[:num_known_classes]
+        u_drift = drift[num_known_classes:]
+
+        return {
+            "known_updated_classes": int((k_cnt > 0).sum().item()) if num_known_classes > 0 else 0,
+            "known_total_classes": num_known_classes,
+            "known_avg_updates": float(k_cnt.float().mean().item()) if num_known_classes > 0 else 0.0,
+            "known_avg_drift": float(k_drift.mean().item()) if num_known_classes > 0 else 0.0,
+            "novel_updated_classes": int((u_cnt > 0).sum().item()) if len(u_cnt) > 0 else 0,
+            "novel_total_classes": len(u_cnt),
+            "novel_untouched_classes": int((u_cnt == 0).sum().item()) if len(u_cnt) > 0 else 0,
+            "novel_avg_updates": float(u_cnt.float().mean().item()) if len(u_cnt) > 0 else 0.0,
+            "novel_avg_drift": float(u_drift.mean().item()) if len(u_drift) > 0 else 0.0,
+        }
 
 
 class ProtoTailComponents(nn.Module):

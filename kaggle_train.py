@@ -1,568 +1,602 @@
-"""Kaggle training runner for ProtoTail (SimGCD & BaCon baselines) on 1x NVIDIA T4.
-
-Optimized for Kaggle Notebooks and Scripts:
-- Automatically loads dataset from: https://www.kaggle.com/datasets/nguyntrnminhtm/gcd-data
-  (Works whether mounted at /kaggle/input/gcd-data or auto-downloaded via kagglehub).
-- Automatically unpacks any archives (.tgz, .tar.gz, .zip) if present.
-- Discovers CUB-200 data and precomputed long-tail splits directly from gcd-data.
-- Uses 1x NVIDIA T4 GPU (default: 'cuda:0' or 'cuda').
-- Enables FP16 Automatic Mixed Precision (AMP) by default (~3x speedup, 50% less VRAM).
-- Sets eval_interval=5 by default (saves ~2 hours of KMeans clustering overhead, epoch 200 always evaluated).
-- Sets num_workers=2 by default (ideal for Kaggle's 2-4 vCPUs).
-- Saves checkpoints and metrics persistently to /kaggle/working/outputs/.
-
-Usage in Kaggle Notebook cells:
---------------------------------
-# 1. Train BaCon Baseline (1x T4, ~3 hours for 200 epochs):
-!python kaggle_train.py --baseline bacon --epochs 200
-
-# 2. Train BaCon + ProtoTail (1x T4, ~3.2 hours for 200 epochs):
-!python kaggle_train.py --baseline bacon --enable-prototail --epochs 200
-
-# 3. Train SimGCD Baseline (1x T4, ~2.5 hours for 200 epochs):
-!python kaggle_train.py --baseline simgcd --epochs 200
-"""
-
-import argparse
-import os
-import subprocess
-import sys
-import tarfile
-import zipfile
-from datetime import datetime
-from pathlib import Path
-
-
-def _setup_kmeans_backend(requested_backend: str) -> str:
-    """Ensure requested KMeans backend is functional on Kaggle GPU.
-    
-    If faiss_gpu is requested, attempts to install faiss-gpu-cu12 or faiss-gpu if missing.
-    If unavailable, falls back to sklearn_cpu to guarantee zero-crash execution.
-    """
-    if requested_backend != "faiss_gpu":
-        return requested_backend
-
-    try:
-        import faiss
-        if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
-            print(f"[Kaggle Setup] faiss-gpu is ready ({faiss.get_num_gpus()} GPU(s) active for parallel clustering).")
-            return "faiss_gpu"
-    except Exception:
-        pass
-
-    print("[Kaggle Setup] faiss-gpu not found. Installing faiss-gpu for accelerated clustering...")
-    for pkg in ("faiss-gpu-cu12", "faiss-gpu"):
-        try:
-            res = subprocess.run(
-                [sys.executable, "-m", "pip", "install", pkg, "-q"],
-                check=False,
-            )
-            if res.returncode == 0:
-                import faiss
-                if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
-                    print(f"[Kaggle Setup] Successfully installed {pkg} with GPU support!")
-                    return "faiss_gpu"
-        except Exception as exc:
-            print(f"[Kaggle Setup] Attempt {pkg} failed: {exc}")
-
-    print("[Kaggle Setup] Warning: faiss-gpu could not be installed. Falling back to sklearn_cpu to guarantee completion.")
-    return "sklearn_cpu"
-
-
-def _extract_archive_if_needed(archive_path: Path, target_dir: Path) -> Path:
-    """Extract .tar.gz, .tgz, or .zip archive to target_dir if not already extracted."""
-    target_dir.mkdir(parents=True, exist_ok=True)
-    marker = target_dir / f".extracted_{archive_path.stem}"
-    if marker.is_file():
-        return target_dir
-
-    print(f"[Dataset] Extracting archive: {archive_path.name} -> {target_dir}...")
-    if archive_path.suffix in (".tgz", ".gz") or archive_path.name.endswith(".tar.gz"):
-        with tarfile.open(archive_path, "r:*") as tar:
-            tar.extractall(path=target_dir)
-    elif archive_path.suffix == ".zip":
-        with zipfile.ZipFile(archive_path, "r") as zip_ref:
-            zip_ref.extractall(target_dir)
-
-    marker.touch()
-    return target_dir
-
-
-def _prepare_gcd_dataset(
-    dataset_slug: str = "nguyntrnminhtm/gcd-data",
-    repo_root: Path = Path("."),
-    dataset_name: str = "cub",
-    imb_ratio: int = 20,
-) -> tuple[str, str]:
-    """
-    Locate or download dataset from https://www.kaggle.com/datasets/nguyntrnminhtm/gcd-data.
-    Discovers data_root and splits_root automatically based on dataset_name.
-    Returns (data_root, splits_root).
-    """
-    norm = dataset_name.lower().strip()
-    search_dirs: list[Path] = []
-
-    # 1. Check mounted dataset directories in Kaggle
-    for m in [Path("/kaggle/input/gcd-data"), Path("/kaggle/input")]:
-        if m.is_dir() and m not in search_dirs:
-            search_dirs.append(m)
-
-    # 2. Local fallback directories
-    for d in [Path("D:/data"), repo_root / "data", Path("./data"), Path("../data")]:
-        if d.is_dir() and d not in search_dirs:
-            search_dirs.append(d)
-
-    cand_names = {
-        "cub": ["cub", "CUB_200_2011", "cub200"],
-        "cars": ["car", "cars", "stanford_cars", "scars"],
-        "aircraft": ["aircraft", "fgvc_aircraft", "fgvc-aircraft-2013b"],
-    }.get(norm, [norm])
-
-    def _resolve_from_dirs(dirs: list[Path]) -> Path | None:
-        for sdir in dirs:
-            if not sdir.is_dir():
-                continue
-            for name in cand_names:
-                if (sdir / name).is_dir():
-                    return sdir / name
-            for child in sdir.iterdir():
-                if child.is_dir():
-                    for name in cand_names:
-                        if child.name.lower() == name.lower():
-                            return child
-                        if (child / name).is_dir():
-                            return child / name
-        return None
-
-    found_dir = _resolve_from_dirs(search_dirs)
-
-    # 3. If not found locally, download via kagglehub (standard in Kaggle)
-    if found_dir is None:
-        try:
-            import kagglehub
-        except ImportError:
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "kagglehub", "-q"],
-                    check=False,
-                )
-                import kagglehub
-            except Exception:
-                kagglehub = None
-
-        if kagglehub is not None:
-            try:
-                print(f"[Dataset] Fetching '{dataset_slug}' via kagglehub...")
-                download_path = Path(kagglehub.dataset_download(dataset_slug))
-                print(f"[Dataset] Dataset ready at: {download_path}")
-                search_dirs.insert(0, download_path)
-                found_dir = _resolve_from_dirs([download_path])
-            except Exception as exc:
-                print(f"[Dataset] kagglehub notice: {exc}")
-
-    # 4. Check for any compressed archives that need unpacking
-    extract_base = (
-        Path("/kaggle/working/data")
-        if Path("/kaggle/working").is_dir()
-        else repo_root / "data"
-    )
-    if found_dir is None:
-        for sdir in list(search_dirs):
-            if not sdir.is_dir():
-                continue
-            for ext in ("*.tgz", "*.tar.gz", "*.zip"):
-                for archive_path in sdir.glob(ext):
-                    extracted_dir = _extract_archive_if_needed(archive_path, extract_base)
-                    search_dirs.insert(0, extracted_dir)
-                    found_dir = _resolve_from_dirs([extracted_dir])
-                    if found_dir:
-                        break
-                if found_dir:
-                    break
-
-    # 5. Resolve data_root
-    if found_dir is not None:
-        data_root = str(found_dir)
-    elif Path("/kaggle/input/gcd-data").is_dir():
-        data_root = str(Path("/kaggle/input/gcd-data") / norm)
-    else:
-        data_root = f"./data/{norm}"
-
-    # 6. Resolve splits_root
-    if norm in ("cub", "cub200"):
-        pattern = f"cub200_k100_imb{imb_ratio}"
-    elif norm in ("cars", "stanford_cars", "scars"):
-        pattern = f"cars196_k98_imb{imb_ratio}"
-    elif norm in ("aircraft", "fgvc_aircraft"):
-        pattern = f"aircraft_k80_imb{imb_ratio}"
-    else:
-        pattern = f"*_imb{imb_ratio}"
-
-    splits_root = str(repo_root / "data_uq_idxs")
-    if (repo_root / "data_uq_idxs" / pattern).is_dir():
-        splits_root = str(repo_root / "data_uq_idxs")
-    else:
-        for sdir in search_dirs:
-            if not sdir.is_dir():
-                continue
-            for match in sdir.rglob(pattern):
-                if match.is_dir():
-                    splits_root = str(match.parent)
-                    break
-            if splits_root != str(repo_root / "data_uq_idxs"):
-                break
-
-    return data_root, splits_root
-
-
-def _get_kaggle_account(cli_override: str | None = None) -> str:
-    """Detect active Kaggle account/username from CLI, kaggle API, environment, or kaggle.json."""
-    if cli_override:
-        return cli_override
-    for env_var in ("KAGGLE_USERNAME", "KAGGLE_USER_NAME", "KAGGLE_USER"):
-        val = os.environ.get(env_var)
-        if val:
-            return val
-    try:
-        import kaggle
-        cfg = getattr(kaggle.api, "config_values", {}) or {}
-        username = cfg.get("username")
-        if username:
-            return str(username)
-    except Exception:
-        pass
-    try:
-        kaggle_json = Path.home() / ".kaggle" / "kaggle.json"
-        if kaggle_json.is_file():
-            import json as _json
-            with open(kaggle_json, "r", encoding="utf-8") as f:
-                data = _json.load(f)
-                if "username" in data and data["username"]:
-                    return str(data["username"])
-    except Exception:
-        pass
-    if Path("/kaggle").is_dir():
-        return "kaggle_notebook_active"
-    return "unknown (local)"
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="ProtoTail Kaggle 2x T4 Dual-GPU Training Runner",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--baseline",
-        type=str,
-        default="bacon",
-        choices=["simgcd", "bacon"],
-        help="GCD baseline model to train ('simgcd' or 'bacon')",
-    )
-    parser.add_argument(
-        "--enable-prototail",
-        action="store_true",
-        help="Enable ProtoTail method plugin on top of the baseline",
-    )
-    parser.add_argument(
-        "--dataset-slug",
-        type=str,
-        default="nguyntrnminhtm/gcd-data",
-        help="Kaggle dataset slug (https://www.kaggle.com/datasets/<dataset-slug>)",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to custom experiment YAML config (default: configs/experiment_<baseline>.yaml)",
-    )
-    parser.add_argument(
-        "--epochs", type=int, default=200, help="Total number of epochs to train"
-    )
-    parser.add_argument(
-        "--batch-size", type=int, default=128, help="Training batch size"
-    )
-    parser.add_argument(
-        "--lr", type=float, default=None, help="Override base learning rate"
-    )
-    parser.add_argument(
-        "--seed", type=int, default=0, help="Random seed for reproducibility"
-    )
-    parser.add_argument(
-        "--eval-interval",
-        type=int,
-        default=5,
-        help="Evaluation epoch interval (every N epochs). Saves ~2h of KMeans clustering.",
-    )
-    parser.add_argument(
-        "--kmeans-backend",
-        choices=["sklearn_cpu", "faiss_gpu"],
-        default="faiss_gpu",
-        help="KMeans backend for clustering eval and distribution estimation",
-    )
-    parser.add_argument("--kmeans-n-init", type=int, default=10)
-    parser.add_argument("--kmeans-max-iter", type=int, default=300)
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=2,
-        help="Dataloader worker processes (2 is optimal for Kaggle vCPUs)",
-    )
-    parser.add_argument(
-        "--fp16",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use FP16 Automatic Mixed Precision (AMP) (~3x faster on T4, saves 50%% VRAM)",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda:0",
-        help="Device to train on ('cuda:0', 'cuda', or 'cpu')",
-    )
-    parser.add_argument(
-        "--data-root",
-        type=str,
-        default=None,
-        help="Override root path containing CUB-200-2011",
-    )
-    parser.add_argument(
-        "--splits-root",
-        type=str,
-        default=None,
-        help="Override directory containing long-tail split folders",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=None,
-        help="Directory to save checkpoints and metrics (default: /kaggle/working/outputs or ./outputs)",
-    )
-    parser.add_argument(
-        "--run-name",
-        type=str,
-        default=None,
-        help="Custom experiment name tag",
-    )
-    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", type=str, default="cub", help="Dataset name: cub, cars, aircraft")
-    parser.add_argument("--imb-ratio", "--imb_ratio", dest="imb_ratio", type=int, default=10, help="Imbalance ratio: 10, 20, 50, 100")
-    parser.add_argument(
-        "--simgcd-eval-head",
-        "--simgcd_eval_head",
-        dest="simgcd_eval_head",
-        type=str,
-        choices=["kmeans", "parametric"],
-        default="kmeans",
-        help="Evaluation head for SimGCD baseline: 'kmeans' (matches ProtoTail/BaCon track) or 'parametric' (logits argmax)",
-    )
-    parser.add_argument("--use-parts", "--use_parts", dest="use_parts", action="store_true", default=False, help="Enable ProtoTail parts")
-    parser.add_argument("--ablate-adaptive-capacity", "--ablate_adaptive_capacity", dest="ablate_adaptive_capacity", action="store_true", default=False, help="Ablate adaptive capacity")
-    parser.add_argument("--enable-pseudo-labeling", "--enable_pseudo_labeling", dest="enable_pseudo_labeling", action="store_true", default=False, help="Enable pseudo labeling")
-    parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
-    parser.add_argument(
-        "--eval-feature-mode",
-        choices=["legacy_concat", "balanced_concat"],
-        default="legacy_concat",
-        help="Evaluation feature concatenation mode: 'legacy_concat' or 'balanced_concat'",
-    )
-    parser.add_argument(
-        "--gate-warm-start-from-support",
-        action="store_true",
-        default=False,
-        help="Init gates from estimated training supports at epoch 0",
-    )
-    parser.add_argument(
-        "--known-frequency-mapping",
-        choices=["direct_hungarian", "bacon_rank"],
-        default="direct_hungarian",
-        help="Known frequency mapping mode: 'direct_hungarian' or 'bacon_rank'",
-    )
-    parser.add_argument(
-        "--require-paper-dual-selection",
-        action="store_true",
-        default=False,
-        help="Fail unless the persistent paper D1/D2 selector is integrated",
-    )
-    parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None, help="Kaggle username/account name override")
-    args, unknown_args = parser.parse_known_args()
-    if args.use_parts:
-        args.enable_prototail = True
-
-    repo_root = Path(__file__).resolve().parent
-    sys.path.insert(0, str(repo_root / "src"))
-
-    # Config path
-    if args.config:
-        config_path = Path(args.config)
-    else:
-        config_path = repo_root / f"configs/experiment_{args.baseline}.yaml"
-
-    if not config_path.is_file():
-        raise FileNotFoundError(f"Configuration file not found: {config_path}")
-
-    # Auto-resolve dataset from Kaggle gcd-data
-    auto_data_root, auto_splits_root = _prepare_gcd_dataset(
-        dataset_slug=args.dataset_slug,
-        repo_root=repo_root,
-        dataset_name=args.dataset_name,
-        imb_ratio=args.imb_ratio,
-    )
-    data_root = args.data_root or auto_data_root
-    splits_root = args.splits_root or auto_splits_root
-
-    # Output directory (with graceful Windows fallback if /kaggle path passed)
-    if args.output_dir:
-        if str(args.output_dir).startswith("/kaggle") and not Path("/kaggle").is_dir():
-            output_dir = repo_root / "outputs"
-        else:
-            output_dir = Path(args.output_dir)
-    elif Path("/kaggle/working").is_dir():
-        output_dir = Path("/kaggle/working/outputs")
-    else:
-        output_dir = repo_root / "outputs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Experiment run name
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    method_tag = "prototail" if args.enable_prototail else "baseline"
-    run_name = args.run_name or f"{args.baseline}-{method_tag}-t4-{timestamp}"
-
-    kaggle_account = _get_kaggle_account(args.kaggle_user)
-
-    # Determine explicit ablation configuration name
-    if not args.use_parts and not args.enable_pseudo_labeling:
-        detected_config = "Base"
-    elif not args.use_parts and args.enable_pseudo_labeling:
-        detected_config = "Pseudo"
-    elif args.use_parts and args.ablate_adaptive_capacity and not args.enable_pseudo_labeling:
-        detected_config = "Prototype"
-    elif args.use_parts and not args.ablate_adaptive_capacity and not args.enable_pseudo_labeling:
-        detected_config = "Prototype_Tailaware"
-    elif args.use_parts and args.ablate_adaptive_capacity and args.enable_pseudo_labeling:
-        detected_config = "Full_wo_Tail"
-    elif args.use_parts and not args.ablate_adaptive_capacity and args.enable_pseudo_labeling:
-        detected_config = "Full"
-    else:
-        detected_config = "Custom"
-
-    try:
-        import torch
-
-        cuda_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        if cuda_count > 1:
-            dev_desc = f"{cuda_count}x GPUs ({torch.cuda.get_device_name(0)}, etc.) [Training: cuda:0 | Clustering: {cuda_count}x GPUs parallel]"
-        elif cuda_count == 1:
-            dev_desc = f"1x GPU ({torch.cuda.get_device_name(0)})"
-        else:
-            dev_desc = "CPU"
-    except Exception:
-        dev_desc = args.device
-
-    print("=" * 65)
-    print("        PROTOTAIL KAGGLE DUAL-GPU TRAINING RUNNER")
-    print("=" * 65)
-    print(f"Kaggle Account:   {kaggle_account}")
-    print(f"Ablation Setting: {detected_config}")
-    print(f"Kaggle Dataset:   https://www.kaggle.com/datasets/{args.dataset_slug}")
-    print(f"Model Baseline:   {args.baseline.upper()}")
-    print(f"Method Plugin:    {'ProtoTail (Enabled)' if args.enable_prototail else 'Pure Baseline'}")
-    print(f"Tail-aware Reg:   {'ACTIVE (0.05)' if (args.use_parts and not args.ablate_adaptive_capacity) else 'DISABLED (0.0)'}")
-    print(f"Pseudo-labeling:  {'ACTIVE (D1+D2)' if (args.enable_pseudo_labeling and args.enable_novel_pseudo) else ('ACTIVE (D1)' if args.enable_pseudo_labeling else 'DISABLED')}")
-    print(f"Hardware/Device:  {dev_desc}")
-    print(f"Epochs:           {args.epochs}")
-    print(f"Batch Size:       {args.batch_size}")
-    print(f"Mixed Precision:  {'FP16 (Enabled, Tensor Cores Active)' if args.fp16 else 'FP32'}")
-    print(f"Eval Interval:    Every {args.eval_interval} epochs (plus final epoch {args.epochs})")
-    print(f"Num Workers:      {args.num_workers}")
-    print(f"Run Name:         {run_name}")
-    print(f"Data Root:        {data_root}")
-    print(f"Splits Root:      {splits_root}")
-    print(f"Output Directory: {output_dir}")
-    print("=" * 65)
-
-    # Build execution command for train.py
-    train_script = repo_root / "src/prototail_gcd/train.py"
-    active_kmeans_backend = _setup_kmeans_backend(args.kmeans_backend)
-    cmd = [
-        sys.executable,
-        str(train_script),
-        "--config",
-        str(config_path),
-        "--run-name",
-        run_name,
-        "--dataset-name",
-        args.dataset_name,
-        "--data-root",
-        data_root,
-        "--splits-root",
-        splits_root,
-        "--output-dir",
-        str(output_dir),
-        "--device",
-        args.device,
-        "--epochs",
-        str(args.epochs),
-        "--batch-size",
-        str(args.batch_size),
-        "--eval-interval",
-        str(args.eval_interval),
-        "--kmeans-backend",
-        active_kmeans_backend,
-        "--kmeans-n-init",
-        str(args.kmeans_n_init),
-        "--kmeans-max-iter",
-        str(args.kmeans_max_iter),
-        "--num-workers",
-        str(args.num_workers),
-        "--seed",
-        str(args.seed),
-    ]
-
-    if args.enable_prototail:
-        cmd.append("--enable-prototail")
-    if args.imb_ratio is not None:
-        cmd.extend(["--imb-ratio", str(args.imb_ratio)])
-    if getattr(args, "simgcd_eval_head", None):
-        cmd.extend(["--simgcd-eval-head", str(args.simgcd_eval_head)])
-    if getattr(args, "use_parts", False):
-        cmd.append("--use-parts")
-    if getattr(args, "ablate_adaptive_capacity", False):
-        cmd.append("--ablate-adaptive-capacity")
-    if getattr(args, "enable_pseudo_labeling", False):
-        cmd.append("--enable-pseudo-labeling")
-    if getattr(args, "enable_novel_pseudo", False):
-        cmd.append("--enable-novel-pseudo")
-    if getattr(args, "eval_feature_mode", None):
-        cmd.extend(["--eval-feature-mode", str(args.eval_feature_mode)])
-    if getattr(args, "gate_warm_start_from_support", False):
-        cmd.append("--gate-warm-start-from-support")
-    if getattr(args, "known_frequency_mapping", None):
-        cmd.extend(["--known-frequency-mapping", str(args.known_frequency_mapping)])
-    if getattr(args, "require_paper_dual_selection", False):
-        cmd.append("--require-paper-dual-selection")
-    if args.lr is not None:
-        cmd.extend(["--lr", str(args.lr)])
-    if args.fp16:
-        cmd.append("--fp16")
-    else:
-        cmd.append("--no-fp16")
-
-    env = {**os.environ, "PYTHONPATH": str(repo_root / "src")}
-
-    print(f"\n[Starting training]: {' '.join(cmd)}\n")
-    sys.stdout.flush()
-
-    process = subprocess.run(cmd, env=env)
-    if process.returncode != 0:
-        print(f"\n[Error] Training failed with return code {process.returncode}")
-        sys.exit(process.returncode)
-
-    print("\n" + "=" * 65)
-    print("Training finished successfully!")
-    print(f"Artifacts and metrics saved to: {output_dir}")
-    summary_file = output_dir / f"{run_name}.summary.json"
-    if summary_file.is_file():
-        print(f"Training summary saved to:   {summary_file}")
-    print("=" * 65)
-
-
-if __name__ == "__main__":
-    main()
+"""Kaggle training runner for ProtoTail (SimGCD & BaCon baselines) on 1x NVIDIA T4.
+
+Optimized for Kaggle Notebooks and Scripts:
+- Automatically loads dataset from: https://www.kaggle.com/datasets/nguyntrnminhtm/gcd-data
+  (Works whether mounted at /kaggle/input/gcd-data or auto-downloaded via kagglehub).
+- Automatically unpacks any archives (.tgz, .tar.gz, .zip) if present.
+- Discovers CUB-200 data and precomputed long-tail splits directly from gcd-data.
+- Uses 1x NVIDIA T4 GPU (default: 'cuda:0' or 'cuda').
+- Enables FP16 Automatic Mixed Precision (AMP) by default (~3x speedup, 50% less VRAM).
+- Sets eval_interval=5 by default (saves ~2 hours of KMeans clustering overhead, epoch 200 always evaluated).
+- Sets num_workers=2 by default (ideal for Kaggle's 2-4 vCPUs).
+- Saves checkpoints and metrics persistently to /kaggle/working/outputs/.
+
+Usage in Kaggle Notebook cells:
+--------------------------------
+# 1. Train BaCon Baseline (1x T4, ~3 hours for 200 epochs):
+!python kaggle_train.py --baseline bacon --epochs 200
+
+# 2. Train BaCon + ProtoTail (1x T4, ~3.2 hours for 200 epochs):
+!python kaggle_train.py --baseline bacon --enable-prototail --epochs 200
+
+# 3. Train SimGCD Baseline (1x T4, ~2.5 hours for 200 epochs):
+!python kaggle_train.py --baseline simgcd --epochs 200
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import tarfile
+import zipfile
+from datetime import datetime
+from pathlib import Path
+
+
+def _setup_kmeans_backend(requested_backend: str) -> str:
+    """Ensure requested KMeans backend is functional on Kaggle GPU.
+    
+    If faiss_gpu is requested, attempts to install faiss-gpu-cu12 or faiss-gpu if missing.
+    If unavailable, falls back to sklearn_cpu to guarantee zero-crash execution.
+    """
+    if requested_backend != "faiss_gpu":
+        return requested_backend
+
+    try:
+        import faiss
+        if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
+            print(f"[Kaggle Setup] faiss-gpu is ready ({faiss.get_num_gpus()} GPU(s) active for parallel clustering).")
+            return "faiss_gpu"
+    except Exception:
+        pass
+
+    print("[Kaggle Setup] faiss-gpu not found. Installing faiss-gpu for accelerated clustering...")
+    for pkg in ("faiss-gpu-cu12", "faiss-gpu"):
+        try:
+            res = subprocess.run(
+                [sys.executable, "-m", "pip", "install", pkg, "-q"],
+                check=False,
+            )
+            if res.returncode == 0:
+                import faiss
+                if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
+                    print(f"[Kaggle Setup] Successfully installed {pkg} with GPU support!")
+                    return "faiss_gpu"
+        except Exception as exc:
+            print(f"[Kaggle Setup] Attempt {pkg} failed: {exc}")
+
+    print("[Kaggle Setup] Warning: faiss-gpu could not be installed. Falling back to sklearn_cpu to guarantee completion.")
+    return "sklearn_cpu"
+
+
+
+def _setup_backbone_cache():
+    """Pre-clone DINOv2 / DINO repositories into torch hub cache.
+    
+    Prevents urllib.error.HTTPError: HTTP 504 Gateway Time-out when GitHub
+    zipball archive endpoint is slow or throttled.
+    """
+    try:
+        import torch.hub
+        hub_dir = Path(torch.hub.get_dir())
+        hub_dir.mkdir(parents=True, exist_ok=True)
+        dinov2_dir = hub_dir / "facebookresearch_dinov2_main"
+        if not (dinov2_dir / "hubconf.py").is_file():
+            print(f"[Kaggle Setup] Pre-cloning DINOv2 repository to {dinov2_dir}...")
+            res = subprocess.run(
+                ["git", "clone", "--depth", "1", "https://github.com/facebookresearch/dinov2.git", str(dinov2_dir)],
+                check=False,
+                timeout=120,
+            )
+            if res.returncode == 0 and (dinov2_dir / "hubconf.py").is_file():
+                print("[Kaggle Setup] Successfully cached DINOv2 repo!")
+            else:
+                print(f"[Kaggle Setup] Warning: git clone dinov2 exited with code {res.returncode}")
+        else:
+            print(f"[Kaggle Setup] DINOv2 repo already cached at {dinov2_dir}")
+    except Exception as exc:
+        print(f"[Kaggle Setup] Warning: error during backbone pre-caching: {exc}")
+
+
+def _extract_archive_if_needed(archive_path: Path, target_dir: Path) -> Path:
+    """Extract .tar.gz, .tgz, or .zip archive to target_dir if not already extracted."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    marker = target_dir / f".extracted_{archive_path.stem}"
+    if marker.is_file():
+        return target_dir
+
+    print(f"[Dataset] Extracting archive: {archive_path.name} -> {target_dir}...")
+    if archive_path.suffix in (".tgz", ".gz") or archive_path.name.endswith(".tar.gz"):
+        with tarfile.open(archive_path, "r:*") as tar:
+            tar.extractall(path=target_dir)
+    elif archive_path.suffix == ".zip":
+        with zipfile.ZipFile(archive_path, "r") as zip_ref:
+            zip_ref.extractall(target_dir)
+
+    marker.touch()
+    return target_dir
+
+
+def _prepare_gcd_dataset(
+    dataset_slug: str = "nguyntrnminhtm/gcd-data",
+    repo_root: Path = Path("."),
+    dataset_name: str = "cub",
+    imb_ratio: int = 20,
+) -> tuple[str, str]:
+    """
+    Locate or download dataset from https://www.kaggle.com/datasets/nguyntrnminhtm/gcd-data.
+    Discovers data_root and splits_root automatically based on dataset_name.
+    Returns (data_root, splits_root).
+    """
+    norm = dataset_name.lower().strip()
+    search_dirs: list[Path] = []
+
+    # 1. Check mounted dataset directories in Kaggle
+    for m in [Path("/kaggle/input/gcd-data"), Path("/kaggle/input")]:
+        if m.is_dir() and m not in search_dirs:
+            search_dirs.append(m)
+
+    # 2. Local fallback directories
+    for d in [Path("D:/data"), repo_root / "data", Path("./data"), Path("../data")]:
+        if d.is_dir() and d not in search_dirs:
+            search_dirs.append(d)
+
+    cand_names = {
+        "cub": ["cub", "CUB_200_2011", "cub200"],
+        "cars": ["car", "cars", "stanford_cars", "scars"],
+        "aircraft": ["aircraft", "fgvc_aircraft", "fgvc-aircraft-2013b"],
+    }.get(norm, [norm])
+
+    def _resolve_from_dirs(dirs: list[Path]) -> Path | None:
+        for sdir in dirs:
+            if not sdir.is_dir():
+                continue
+            for name in cand_names:
+                if (sdir / name).is_dir():
+                    return sdir / name
+            for child in sdir.iterdir():
+                if child.is_dir():
+                    for name in cand_names:
+                        if child.name.lower() == name.lower():
+                            return child
+                        if (child / name).is_dir():
+                            return child / name
+        return None
+
+    found_dir = _resolve_from_dirs(search_dirs)
+
+    # 3. If not found locally, download via kagglehub (standard in Kaggle)
+    if found_dir is None:
+        try:
+            import kagglehub
+        except ImportError:
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "kagglehub", "-q"],
+                    check=False,
+                )
+                import kagglehub
+            except Exception:
+                kagglehub = None
+
+        if kagglehub is not None:
+            try:
+                print(f"[Dataset] Fetching '{dataset_slug}' via kagglehub...")
+                download_path = Path(kagglehub.dataset_download(dataset_slug))
+                print(f"[Dataset] Dataset ready at: {download_path}")
+                search_dirs.insert(0, download_path)
+                found_dir = _resolve_from_dirs([download_path])
+            except Exception as exc:
+                print(f"[Dataset] kagglehub notice: {exc}")
+
+    # 4. Check for any compressed archives that need unpacking
+    extract_base = (
+        Path("/kaggle/working/data")
+        if Path("/kaggle/working").is_dir()
+        else repo_root / "data"
+    )
+    if found_dir is None:
+        for sdir in list(search_dirs):
+            if not sdir.is_dir():
+                continue
+            for ext in ("*.tgz", "*.tar.gz", "*.zip"):
+                for archive_path in sdir.glob(ext):
+                    extracted_dir = _extract_archive_if_needed(archive_path, extract_base)
+                    search_dirs.insert(0, extracted_dir)
+                    found_dir = _resolve_from_dirs([extracted_dir])
+                    if found_dir:
+                        break
+                if found_dir:
+                    break
+
+    # 5. Resolve data_root
+    if found_dir is not None:
+        data_root = str(found_dir)
+    elif Path("/kaggle/input/gcd-data").is_dir():
+        data_root = str(Path("/kaggle/input/gcd-data") / norm)
+    else:
+        data_root = f"./data/{norm}"
+
+    # 6. Resolve splits_root
+    if norm in ("cub", "cub200"):
+        pattern = f"cub200_k100_imb{imb_ratio}"
+    elif norm in ("cars", "stanford_cars", "scars"):
+        pattern = f"cars196_k98_imb{imb_ratio}"
+    elif norm in ("aircraft", "fgvc_aircraft"):
+        pattern = f"aircraft_k80_imb{imb_ratio}"
+    else:
+        pattern = f"*_imb{imb_ratio}"
+
+    splits_root = str(repo_root / "data_uq_idxs")
+    if (repo_root / "data_uq_idxs" / pattern).is_dir():
+        splits_root = str(repo_root / "data_uq_idxs")
+    else:
+        for sdir in search_dirs:
+            if not sdir.is_dir():
+                continue
+            for match in sdir.rglob(pattern):
+                if match.is_dir():
+                    splits_root = str(match.parent)
+                    break
+            if splits_root != str(repo_root / "data_uq_idxs"):
+                break
+
+    return data_root, splits_root
+
+
+def _get_kaggle_account(cli_override: str | None = None) -> str:
+    """Detect active Kaggle account/username from CLI, environment, or kaggle.json."""
+    if cli_override:
+        return cli_override
+    if Path("/kaggle").is_dir():
+        return "kaggle_notebook_active"
+    for env_var in ("KAGGLE_USERNAME", "KAGGLE_USER_NAME", "KAGGLE_USER"):
+        val = os.environ.get(env_var)
+        if val:
+            return val
+    try:
+        kaggle_json = Path.home() / ".kaggle" / "kaggle.json"
+        if kaggle_json.is_file():
+            import json as _json
+            with open(kaggle_json, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+                if "username" in data and data["username"]:
+                    return str(data["username"])
+    except Exception:
+        pass
+    return "unknown (local)"
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="ProtoTail Kaggle 2x T4 Dual-GPU Training Runner",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        default="bacon",
+        choices=["simgcd", "bacon"],
+        help="GCD baseline model to train ('simgcd' or 'bacon')",
+    )
+    parser.add_argument(
+        "--enable-prototail",
+        action="store_true",
+        help="Enable ProtoTail method plugin on top of the baseline",
+    )
+    parser.add_argument(
+        "--dataset-slug",
+        type=str,
+        default="nguyntrnminhtm/gcd-data",
+        help="Kaggle dataset slug (https://www.kaggle.com/datasets/<dataset-slug>)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to custom experiment YAML config (default: configs/experiment_<baseline>.yaml)",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=200, help="Total number of epochs to train"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=128, help="Training batch size"
+    )
+    parser.add_argument(
+        "--lr", type=float, default=None, help="Override base learning rate"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Random seed for reproducibility"
+    )
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=5,
+        help="Evaluation epoch interval (every N epochs). Saves ~2h of KMeans clustering.",
+    )
+    parser.add_argument(
+        "--kmeans-backend",
+        choices=["sklearn_cpu", "faiss_gpu"],
+        default="faiss_gpu",
+        help="KMeans backend for clustering eval and distribution estimation",
+    )
+    parser.add_argument("--kmeans-n-init", type=int, default=10)
+    parser.add_argument("--kmeans-max-iter", type=int, default=300)
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=2,
+        help="Dataloader worker processes (2 is optimal for Kaggle vCPUs)",
+    )
+    parser.add_argument(
+        "--fp16",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use FP16 Automatic Mixed Precision (AMP) (~3x faster on T4, saves 50%% VRAM)",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda:0",
+        help="Device to train on ('cuda:0', 'cuda', or 'cpu')",
+    )
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default=None,
+        help="Override root path containing CUB-200-2011",
+    )
+    parser.add_argument(
+        "--splits-root",
+        type=str,
+        default=None,
+        help="Override directory containing long-tail split folders",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to save checkpoints and metrics (default: /kaggle/working/outputs or ./outputs)",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Custom experiment name tag",
+    )
+    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", type=str, default="cub", help="Dataset name: cub, cars, aircraft")
+    parser.add_argument("--imb-ratio", "--imb_ratio", dest="imb_ratio", type=int, default=10, help="Imbalance ratio: 10, 20, 50, 100")
+    parser.add_argument(
+        "--simgcd-eval-head",
+        "--simgcd_eval_head",
+        dest="simgcd_eval_head",
+        type=str,
+        choices=["kmeans", "parametric"],
+        default="kmeans",
+        help="Evaluation head for SimGCD baseline: 'kmeans' (matches ProtoTail/BaCon track) or 'parametric' (logits argmax)",
+    )
+    parser.add_argument("--use-parts", "--use_parts", dest="use_parts", action="store_true", default=False, help="Enable ProtoTail parts")
+    parser.add_argument("--ablate-adaptive-capacity", "--ablate_adaptive_capacity", dest="ablate_adaptive_capacity", action="store_true", default=False, help="Ablate adaptive capacity")
+    parser.add_argument("--enable-pseudo-labeling", "--enable_pseudo_labeling", dest="enable_pseudo_labeling", action="store_true", default=False, help="Enable pseudo labeling")
+    parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
+    parser.add_argument(
+        "--eval-feature-mode",
+        choices=["legacy_concat", "balanced_concat"],
+        default="legacy_concat",
+        help="Evaluation feature concatenation mode: 'legacy_concat' or 'balanced_concat'",
+    )
+    parser.add_argument(
+        "--gate-warm-start-from-support",
+        action="store_true",
+        default=False,
+        help="Init gates from estimated training supports at epoch 0",
+    )
+    parser.add_argument(
+        "--known-frequency-mapping",
+        choices=["direct_hungarian", "bacon_rank"],
+        default="direct_hungarian",
+        help="Known frequency mapping mode: 'direct_hungarian' or 'bacon_rank'",
+    )
+    parser.add_argument(
+        "--pseudo-mode", choices=["paper", "legacy_ce"], default="paper",
+        help="Persistent paper selection (default) or legacy minibatch pseudo CE",
+    )
+    parser.add_argument(
+        "--novel-frequency-mapping",
+        choices=["auto", "bacon_rank", "output_aligned"],
+        default="auto",
+    )
+    parser.add_argument(
+        "--require-paper-dual-selection",
+        action="store_true",
+        default=False,
+        help="Fail unless the persistent paper D1/D2 selector is integrated",
+    )
+    parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None, help="Kaggle username/account name override")
+    args, unknown_args = parser.parse_known_args()
+    if args.use_parts:
+        args.enable_prototail = True
+
+    repo_root = Path(__file__).resolve().parent
+    sys.path.insert(0, str(repo_root / "src"))
+
+    # Config path
+    if args.config:
+        config_path = Path(args.config)
+    else:
+        config_path = repo_root / f"configs/experiment_{args.baseline}.yaml"
+
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    # Auto-resolve dataset from Kaggle gcd-data
+    auto_data_root, auto_splits_root = _prepare_gcd_dataset(
+        dataset_slug=args.dataset_slug,
+        repo_root=repo_root,
+        dataset_name=args.dataset_name,
+        imb_ratio=args.imb_ratio,
+    )
+    data_root = args.data_root or auto_data_root
+    splits_root = args.splits_root or auto_splits_root
+
+    # Output directory (with graceful Windows fallback if /kaggle path passed)
+    if args.output_dir:
+        if str(args.output_dir).startswith("/kaggle") and not Path("/kaggle").is_dir():
+            output_dir = repo_root / "outputs"
+        else:
+            output_dir = Path(args.output_dir)
+    elif Path("/kaggle/working").is_dir():
+        output_dir = Path("/kaggle/working/outputs")
+    else:
+        output_dir = repo_root / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Experiment run name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    method_tag = "prototail" if args.enable_prototail else "baseline"
+    run_name = args.run_name or f"{args.baseline}-{method_tag}-t4-{timestamp}"
+
+    kaggle_account = _get_kaggle_account(args.kaggle_user)
+
+    # Determine explicit ablation configuration name
+    if not args.use_parts and not args.enable_pseudo_labeling:
+        detected_config = "Base"
+    elif not args.use_parts and args.enable_pseudo_labeling:
+        detected_config = "Pseudo"
+    elif args.use_parts and args.ablate_adaptive_capacity and not args.enable_pseudo_labeling:
+        detected_config = "Prototype"
+    elif args.use_parts and not args.ablate_adaptive_capacity and not args.enable_pseudo_labeling:
+        detected_config = "Prototype_Tailaware"
+    elif args.use_parts and args.ablate_adaptive_capacity and args.enable_pseudo_labeling:
+        detected_config = "Full_wo_Tail"
+    elif args.use_parts and not args.ablate_adaptive_capacity and args.enable_pseudo_labeling:
+        detected_config = "Full"
+    else:
+        detected_config = "Custom"
+
+    try:
+        import torch
+
+        cuda_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if cuda_count > 1:
+            dev_desc = f"{cuda_count}x GPUs ({torch.cuda.get_device_name(0)}, etc.) [Training: cuda:0 | Clustering: {cuda_count}x GPUs parallel]"
+        elif cuda_count == 1:
+            dev_desc = f"1x GPU ({torch.cuda.get_device_name(0)})"
+        else:
+            dev_desc = "CPU"
+    except Exception:
+        dev_desc = args.device
+
+    print("=" * 65)
+    print("        PROTOTAIL KAGGLE DUAL-GPU TRAINING RUNNER")
+    print("=" * 65)
+    print(f"Kaggle Account:   {kaggle_account}")
+    print(f"Ablation Setting: {detected_config}")
+    print(f"Kaggle Dataset:   https://www.kaggle.com/datasets/{args.dataset_slug}")
+    print(f"Model Baseline:   {args.baseline.upper()}")
+    print(f"Method Plugin:    {'ProtoTail (Enabled)' if args.enable_prototail else 'Pure Baseline'}")
+    print(f"Tail-aware Reg:   {'ACTIVE (0.05)' if (args.use_parts and not args.ablate_adaptive_capacity) else 'DISABLED (0.0)'}")
+    print(f"Pseudo-labeling:  {'ACTIVE (D1+D2)' if (args.enable_pseudo_labeling and args.enable_novel_pseudo) else ('ACTIVE (D1)' if args.enable_pseudo_labeling else 'DISABLED')}")
+    print(f"Hardware/Device:  {dev_desc}")
+    print(f"Epochs:           {args.epochs}")
+    print(f"Batch Size:       {args.batch_size}")
+    print(f"Mixed Precision:  {'FP16 (Enabled, Tensor Cores Active)' if args.fp16 else 'FP32'}")
+    print(f"Eval Interval:    Every {args.eval_interval} epochs (plus final epoch {args.epochs})")
+    print(f"Num Workers:      {args.num_workers}")
+    print(f"Run Name:         {run_name}")
+    print(f"Data Root:        {data_root}")
+    print(f"Splits Root:      {splits_root}")
+    print(f"Output Directory: {output_dir}")
+    print("=" * 65)
+
+    # Build execution command for train.py
+    train_script = repo_root / "src/prototail_gcd/train.py"
+    _setup_backbone_cache()
+    active_kmeans_backend = _setup_kmeans_backend(args.kmeans_backend)
+    cmd = [
+        sys.executable,
+        str(train_script),
+        "--config",
+        str(config_path),
+        "--run-name",
+        run_name,
+        "--dataset-name",
+        args.dataset_name,
+        "--data-root",
+        data_root,
+        "--splits-root",
+        splits_root,
+        "--output-dir",
+        str(output_dir),
+        "--device",
+        args.device,
+        "--epochs",
+        str(args.epochs),
+        "--batch-size",
+        str(args.batch_size),
+        "--eval-interval",
+        str(args.eval_interval),
+        "--kmeans-backend",
+        active_kmeans_backend,
+        "--kmeans-n-init",
+        str(args.kmeans_n_init),
+        "--kmeans-max-iter",
+        str(args.kmeans_max_iter),
+        "--num-workers",
+        str(args.num_workers),
+        "--seed",
+        str(args.seed),
+    ]
+
+    if args.enable_prototail:
+        cmd.append("--enable-prototail")
+    if args.imb_ratio is not None:
+        cmd.extend(["--imb-ratio", str(args.imb_ratio)])
+    if getattr(args, "simgcd_eval_head", None):
+        cmd.extend(["--simgcd-eval-head", str(args.simgcd_eval_head)])
+    if getattr(args, "use_parts", False):
+        cmd.append("--use-parts")
+    if getattr(args, "ablate_adaptive_capacity", False):
+        cmd.append("--ablate-adaptive-capacity")
+    if getattr(args, "enable_pseudo_labeling", False):
+        cmd.append("--enable-pseudo-labeling")
+        cmd.extend(["--pseudo-mode", args.pseudo_mode])
+    if getattr(args, "enable_novel_pseudo", False):
+        cmd.append("--enable-novel-pseudo")
+    if getattr(args, "eval_feature_mode", None):
+        cmd.extend(["--eval-feature-mode", str(args.eval_feature_mode)])
+    if getattr(args, "gate_warm_start_from_support", False):
+        cmd.append("--gate-warm-start-from-support")
+    if getattr(args, "known_frequency_mapping", None):
+        cmd.extend(["--known-frequency-mapping", str(args.known_frequency_mapping)])
+    if getattr(args, "novel_frequency_mapping", None):
+        cmd.extend(["--novel-frequency-mapping", str(args.novel_frequency_mapping)])
+    if getattr(args, "require_paper_dual_selection", False):
+        cmd.append("--require-paper-dual-selection")
+    if args.lr is not None:
+        cmd.extend(["--lr", str(args.lr)])
+    if args.fp16:
+        cmd.append("--fp16")
+    else:
+        cmd.append("--no-fp16")
+
+    env = {**os.environ, "PYTHONPATH": str(repo_root / "src")}
+
+    print(f"\n[Starting training]: {' '.join(cmd)}\n")
+    sys.stdout.flush()
+
+    process = subprocess.run(cmd, env=env)
+    if process.returncode != 0:
+        print(f"\n[Error] Training failed with return code {process.returncode}")
+        sys.exit(process.returncode)
+
+    print("\n" + "=" * 65)
+    print("Training finished successfully!")
+    print(f"Artifacts and metrics saved to: {output_dir}")
+    summary_file = output_dir / f"{run_name}.summary.json"
+    if summary_file.is_file():
+        print(f"Training summary saved to:   {summary_file}")
+    print("=" * 65)
+
+
+if __name__ == "__main__":
+    main()

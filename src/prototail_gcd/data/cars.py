@@ -197,6 +197,7 @@ def _make_transforms(image_size: int, crop_pct: float):
         transforms.Resize(resize_size, interpolation=interpolation),
         transforms.RandomCrop(image_size),
         transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(),  # match official SimGCD ImageNet train transform
         transforms.ToTensor(),
         transforms.Normalize(mean=mean, std=std),
     ])

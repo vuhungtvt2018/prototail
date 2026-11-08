@@ -49,6 +49,45 @@ class SemiConLoss(nn.Module):
         return loss.view(view_count, batch_size).mean()
 
 
+def align_novel_cluster_counts(
+    assignments: np.ndarray,
+    novel_cluster_ids: list[int],
+    classifier_probabilities: np.ndarray,
+    num_known_classes: int,
+) -> np.ndarray:
+    """Map KMeans novel cluster sizes to NOVEL CLASSIFIER OUTPUT IDs.
+
+    Uses only unlabeled predictions and cluster membership, never novel GT.
+    A one-to-one Hungarian assignment prevents arbitrary rank-to-neuron mapping.
+    """
+    ids = np.asarray(novel_cluster_ids, dtype=np.int64)
+    assigned = np.asarray(assignments, dtype=np.int64)
+    probs = np.asarray(classifier_probabilities, dtype=np.float64)
+    num_novel = probs.shape[1] - num_known_classes
+    if probs.ndim != 2 or assigned.shape != (len(probs),):
+        raise ValueError("Invalid classifier probabilities / KMeans assignments")
+    if len(ids) != num_novel or num_novel <= 0:
+        raise ValueError("Novel clusters and classifier dimensions must match")
+    if not np.all(np.isfinite(probs)):
+        raise ValueError("Classifier probabilities must be finite")
+    scores = np.zeros((num_novel, num_novel), dtype=np.float64)
+    counts = np.zeros(num_novel, dtype=np.float32)
+    for row, cluster_id in enumerate(ids):
+        members = assigned == cluster_id
+        counts[row] = float(members.sum())
+        if members.any():
+            scores[row] = probs[members, num_known_classes:].mean(axis=0)
+    if num_novel > 1 and np.allclose(scores, scores.mean(), atol=1e-6, rtol=1e-5):
+        raise RuntimeError(
+            "Novel cluster/output association is unidentifiable; refusing "
+            "to silently assign support by rank"
+        )
+    rows, output_cols = linear_sum_assignment(-scores)
+    output_counts = np.zeros(num_novel, dtype=np.float32)
+    output_counts[output_cols] = counts[rows]
+    return output_counts
+
+
 def estimate_class_frequencies(
     model: Any,
     loader: Any,
@@ -62,6 +101,8 @@ def estimate_class_frequencies(
     kmeans_n_init: int = 10,
     kmeans_max_iter: int = 300,
     known_frequency_mapping: str = "direct_hungarian",
+    novel_frequency_mapping: str = "bacon_rank",
+    classifier_temperature: float = 0.1,
 ) -> torch.Tensor:
     from prototail_gcd.models.dino_backbone import forward_global_and_patches
 
@@ -69,6 +110,7 @@ def estimate_class_frequencies(
         kmeans_backend = "sklearn_cpu"
 
     features: list[np.ndarray] = []
+    classifier_probs: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     labeled_masks: list[np.ndarray] = []
     model.eval()
@@ -84,14 +126,34 @@ def estimate_class_frequencies(
             images = images.to(device, non_blocking=True)
             batch_targets = torch.as_tensor(batch_targets).cpu().numpy()
             batch_labeled = torch.as_tensor(batch_labeled).bool().cpu().numpy()
-            backbone = getattr(model, "contrastive_backbone", getattr(model, "backbone", None))
-            if backbone is None:
-                raise ValueError("Model has no backbone for feature extraction")
-            global_features, _ = forward_global_and_patches(
-                backbone,
-                images,
-                finetune_from_block=finetune_from_block,
-            )
+            if novel_frequency_mapping == "output_aligned":
+                # Use exactly the same classifier head that receives gradients.
+                # SimGCD returns a 4-tuple; BaCon returns a ModelOutput.
+                prediction = model(images)
+                if isinstance(prediction, tuple):
+                    global_features, _projection, class_logits, *_rest = prediction
+                else:
+                    global_features = prediction.branches["contrastive"].global_features
+                    class_logits = prediction.branches["classification"].logits
+                if class_logits is None or class_logits.shape[1] != num_classes:
+                    raise RuntimeError("Frequency estimator requires all classifier logits")
+                if classifier_temperature <= 0:
+                    raise ValueError("classifier_temperature must be positive")
+                classifier_probs.append(
+                    F.softmax(class_logits.float() / classifier_temperature, dim=-1)
+                    .cpu().numpy()
+                )
+            elif novel_frequency_mapping == "bacon_rank":
+                backbone = getattr(model, "contrastive_backbone", getattr(model, "backbone", None))
+                if backbone is None:
+                    raise ValueError("Model has no backbone for feature extraction")
+                global_features, _ = forward_global_and_patches(
+                    backbone,
+                    images,
+                    finetune_from_block=finetune_from_block,
+                )
+            else:
+                raise ValueError(f"Unknown novel frequency mode: {novel_frequency_mapping}")
             features.append(F.normalize(global_features, dim=-1).cpu().numpy())
             targets.append(batch_targets.reshape(-1))
             labeled_masks.append(batch_labeled.reshape(-1))
@@ -158,17 +220,21 @@ def estimate_class_frequencies(
         raise ValueError(f"Unsupported known_frequency_mapping mode: {known_frequency_mapping}")
 
     novel_cluster_ids = sorted(set(range(num_classes)) - set(known_cluster_ids))
-    novel_cluster_counts = np.sort(cluster_counts[novel_cluster_ids])[::-1]
     novel_count = num_classes - num_known_classes
-    if novel_count:
+    if novel_count and novel_frequency_mapping == "output_aligned":
+        all_probs = np.concatenate(classifier_probs, axis=0)
+        # No oracle novel class frequencies or labels are accessed here.
+        estimate[num_known_classes:] = align_novel_cluster_counts(
+            assignments, novel_cluster_ids, all_probs, num_known_classes,
+        )
+    elif novel_count and novel_frequency_mapping == "bacon_rank":
         warnings.warn(
-            "Novel support sizes are rank-assigned to classifier output IDs "
-            "without cluster-to-logit correspondence (BaCon reference heuristic). "
-            "Do not interpret per-novel-class capacity targets as verified support.",
+            "Legacy BaCon rank-assigned novel frequencies; classifier output IDs "
+            "are not aligned. Use 'output_aligned' for repaired ProtoTail Full.",
             RuntimeWarning,
             stacklevel=2,
         )
-    estimate[num_known_classes:] = novel_cluster_counts[:novel_count]
+        estimate[num_known_classes:] = np.sort(cluster_counts[novel_cluster_ids])[::-1]
     return torch.as_tensor(estimate, dtype=torch.float32, device=device)
 
 

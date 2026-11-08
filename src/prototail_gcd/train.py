@@ -26,6 +26,8 @@ from prototail_gcd.data.cub import CUBLongTailAdapter
 from prototail_gcd.evaluation.clustering import clustering_metrics
 from prototail_gcd.methods.prototail import ProtoTailPlugin
 from prototail_gcd.models.dino_backbone import backbone_spec
+from prototail_gcd.pseudo.paper_selector import PaperDualSelector
+from prototail_gcd.pseudo.promotion_store import PromotionStore
 from prototail_gcd.training.engine import TrainingEngine
 
 
@@ -326,6 +328,18 @@ def main(allowed_baseline: str | None = None) -> None:
         help="Known frequency mapping mode: 'direct_hungarian' (Appendix B literal) or 'bacon_rank' (BaCon dist_est.py)",
     )
     parser.add_argument(
+        "--pseudo-mode",
+        choices=["paper", "legacy_ce"],
+        default="paper",
+        help="Use the paper persistent D1/D2 selector, or explicitly choose legacy minibatch CE",
+    )
+    parser.add_argument(
+        "--novel-frequency-mapping",
+        choices=["auto", "bacon_rank", "output_aligned"],
+        default="auto",
+        help="Auto: output-aligned for Tail-aware ProtoTail, legacy rank for Base BaCon",
+    )
+    parser.add_argument(
         "--require-paper-dual-selection",
         action="store_true",
         default=False,
@@ -373,12 +387,10 @@ def main(allowed_baseline: str | None = None) -> None:
     ablate_capacity = bool(arguments.ablate_adaptive_capacity)
     enable_pseudo = bool(arguments.enable_pseudo_labeling)
     enable_novel = bool(arguments.enable_novel_pseudo)
-    if arguments.require_paper_dual_selection and (enable_pseudo or enable_novel):
-        raise NotImplementedError(
-            "Paper Full requires persistent known/novel promotion "
-            "(Eq. 9-11, Algorithm 1, Appendix B). Current per-batch "
-            "pseudo-CE is NOT the paper selector."
-        )
+    if enable_novel and not enable_pseudo:
+        raise ValueError("Novel pseudo-selection requires --enable-pseudo-labeling")
+    if arguments.require_paper_dual_selection and enable_pseudo and arguments.pseudo_mode != "paper":
+        raise ValueError("Paper Full requires --pseudo-mode paper")
 
     method_config = config.get("method", {})
     if not isinstance(method_config, dict):
@@ -544,10 +556,38 @@ def main(allowed_baseline: str | None = None) -> None:
     context["enable_novel_pseudo"] = bool(
         baseline_config.get("enable_novel_pseudo", False)
     )
+    paper_store = None
+    paper_selector = None
+    if enable_pseudo and arguments.pseudo_mode == "paper":
+        if context.get("distribution_loader") is None:
+            raise RuntimeError("Paper selection requires the masked distribution_loader")
+        paper_store = PromotionStore(dataset.num_classes, len(dataset.known_class_ids))
+        paper_selector = PaperDualSelector(
+            n_known=len(dataset.known_class_ids),
+            n_classes=dataset.num_classes,
+            class_temperature=float(baseline_config.get("student_temp", 0.1)),
+            seed=seed,
+            novel_epochs=(50, 60, 70, 80, 90, 100) if enable_novel else (),
+        )
+        context["persistent_promotion_store"] = paper_store
+        # Paper supervision comes from persistent promotions, not extra CE.
+        # Keep all native baseline distillation/contrastive objectives intact.
+        context["enable_pseudo_labeling"] = False
+        context["enable_novel_pseudo"] = False
+        baseline_config["enable_pseudo_labeling"] = False
+        baseline_config["enable_novel_pseudo"] = False
     context["kmeans_backend"] = arguments.kmeans_backend
     context["kmeans_n_init"] = arguments.kmeans_n_init
     context["kmeans_max_iter"] = arguments.kmeans_max_iter
     context["known_frequency_mapping"] = arguments.known_frequency_mapping
+    novel_map_mode = arguments.novel_frequency_mapping
+    if novel_map_mode == "auto":
+        novel_map_mode = (
+            "output_aligned"
+            if method_enabled and float(method_settings.get("capacity_regularization_weight", 0.0)) > 0
+            else "bacon_rank"
+        )
+    context["novel_frequency_mapping"] = novel_map_mode
     context["gate_warm_start_from_support"] = bool(arguments.gate_warm_start_from_support)
     context["needs_frequency_estimate"] = (
         baseline_name == "bacon"
@@ -569,6 +609,7 @@ def main(allowed_baseline: str | None = None) -> None:
         ),
     }
     config.setdefault("frequency_runtime", {})["known_mapping"] = arguments.known_frequency_mapping
+    config["frequency_runtime"]["novel_mapping"] = context["novel_frequency_mapping"]
 
     # Determine explicit ablation configuration name
     if not method_enabled and not enable_pseudo:
@@ -607,8 +648,8 @@ def main(allowed_baseline: str | None = None) -> None:
     print(f"  [1] Baseline Objectives:  ACTIVE")
     print(f"  [2] ProtoTail Parts:      {'ACTIVE (attached)' if method_enabled else 'DISABLED'}")
     print(f"  [3] Adaptive Tail-aware:  {'ACTIVE (capacity_weight=0.05)' if (method_enabled and not ablate_capacity) else 'DISABLED (weight=0.0)'}")
-    print(f"  [4] Pseudo-Labeling (D1): {'ACTIVE (known classes)' if enable_pseudo else 'DISABLED'}")
-    print(f"  [5] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
+    print(f"  [4] Pseudo mode:          {arguments.pseudo_mode if enable_pseudo else 'DISABLED'}")
+    print(f"  [5] Paper D1/D2:         {'ACTIVE' if paper_selector is not None else 'DISABLED'}")
     print("=" * 68 + "\n")
 
     engine = TrainingEngine(
@@ -704,6 +745,17 @@ def main(allowed_baseline: str | None = None) -> None:
                     kmeans_n_init=arguments.kmeans_n_init,
                     kmeans_max_iter=arguments.kmeans_max_iter,
                 )
+            if paper_selector is not None and paper_selector.scheduled(epoch + 1):
+                selection_event = paper_selector.run(
+                    epoch + 1,
+                    model,
+                    baseline,
+                    dataset.evaluation_loaders["distribution"],
+                    device,
+                    paper_store,
+                )
+                record["paper_selection"] = selection_event
+                print("[PAPER_D1_D2] " + json.dumps(selection_event, sort_keys=True), flush=True)
             serialized_record = json.dumps(record, sort_keys=True, allow_nan=False)
             print(serialized_record, flush=True)
             metrics_file.write(serialized_record + "\n")
@@ -714,6 +766,16 @@ def main(allowed_baseline: str | None = None) -> None:
                 print(f"[UNLABELED-TRAIN EVAL] Epoch {epoch + 1}: All {all_u:.2f} | Known {ut.get('known_acc', 0.0):.2f} | Novel {ut.get('novel_acc', 0.0):.2f} | H-Score {ut.get('h_score', 0.0):.2f}", flush=True)
                 if "k_many" in ut and ut["k_many"] is not None and ut["k_many"] >= 0:
                     print(f"  Shot Breakdown (Train): Known [Many: {ut.get('k_many', 0.0):.2f}, Med: {ut.get('k_med', 0.0):.2f}, Few: {ut.get('k_few', 0.0):.2f}] | Novel [Many: {ut.get('u_many', 0.0):.2f}, Med: {ut.get('u_med', 0.0):.2f}, Few: {ut.get('u_few', 0.0):.2f}]", flush=True)
+                if "fused_all_acc" in ut and "global_all_acc" in ut:
+                    u_f_all, u_g_all = ut.get("fused_all_acc", 0.0), ut.get("global_all_acc", 0.0)
+                    u_f_old, u_g_old = ut.get("fused_known_acc", 0.0), ut.get("global_known_acc", 0.0)
+                    u_f_new, u_g_new = ut.get("fused_novel_acc", 0.0), ut.get("global_novel_acc", 0.0)
+                    print(
+                        f"  [ProtoTail Diagnostics Train] Part Boost: All {(u_f_all - u_g_all):+.2f}% | "
+                        f"Known {(u_f_old - u_g_old):+.2f}% (Fused {u_f_old:.2f} vs Global {u_g_old:.2f}) | "
+                        f"Novel {(u_f_new - u_g_new):+.2f}% (Fused {u_f_new:.2f} vs Global {u_g_new:.2f})",
+                        flush=True,
+                    )
 
                 if all_u > best_unl_acc:
                     best_unl_acc = all_u
@@ -724,6 +786,7 @@ def main(allowed_baseline: str | None = None) -> None:
                             "model": model.state_dict(),
                             "epoch": epoch + 1,
                             "best_unlabeled_metrics": ut,
+                            "promotion_store": paper_store.export_state() if paper_store is not None else {},
                             "config": config,
                         },
                         best_unl_checkpoint_path,
@@ -740,14 +803,38 @@ def main(allowed_baseline: str | None = None) -> None:
                 if "k_many" in test_m and test_m["k_many"] is not None and test_m["k_many"] >= 0:
                     print(f"  Shot Breakdown (Test):  Known [Many: {test_m.get('k_many', 0.0):.2f}, Med: {test_m.get('k_med', 0.0):.2f}, Few: {test_m.get('k_few', 0.0):.2f}] | Novel [Many: {test_m.get('u_many', 0.0):.2f}, Med: {test_m.get('u_med', 0.0):.2f}, Few: {test_m.get('u_few', 0.0):.2f}]", flush=True)
                 if "fused_all_acc" in test_m and "global_all_acc" in test_m:
-                    f_acc = test_m["fused_all_acc"]
-                    g_acc = test_m["global_all_acc"]
-                    print(f"  [ProtoTail Diagnostics] Fused: {f_acc:.2f} | Global: {g_acc:.2f} | Part Boost: {(f_acc - g_acc):+.2f}", flush=True)
+                    f_all = test_m.get("fused_all_acc", 0.0)
+                    g_all = test_m.get("global_all_acc", 0.0)
+                    f_old = test_m.get("fused_known_acc", 0.0)
+                    g_old = test_m.get("global_known_acc", 0.0)
+                    f_new = test_m.get("fused_novel_acc", 0.0)
+                    g_new = test_m.get("global_novel_acc", 0.0)
+                    print(
+                        f"  [ProtoTail Diagnostics Test]  Part Boost: All {(f_all - g_all):+.2f}% | "
+                        f"Known {(f_old - g_old):+.2f}% (Fused {f_old:.2f} vs Global {g_old:.2f}) | "
+                        f"Novel {(f_new - g_new):+.2f}% (Fused {f_new:.2f} vs Global {g_new:.2f})",
+                        flush=True,
+                    )
                 elif "parametric_all_acc" in test_m:
                     p_acc = test_m["parametric_all_acc"]
                     p_old = test_m.get("parametric_known_acc", 0.0)
                     p_new = test_m.get("parametric_novel_acc", 0.0)
                     print(f"  [SimGCD Diagnostics] Parametric Head: All {p_acc:.2f} | Known {p_old:.2f} | Novel {p_new:.2f}", flush=True)
+
+                if paper_store is not None:
+                    promoted = paper_store.export_state()
+                    total_prom = len(promoted)
+                    k_prom = sum(1 for cid in promoted.values() if cid < known_class_count)
+                    u_prom = sum(1 for cid in promoted.values() if cid >= known_class_count)
+                    k_classes = len(set(cid for cid in promoted.values() if cid < known_class_count))
+                    u_classes = len(set(cid for cid in promoted.values() if cid >= known_class_count))
+                    novel_total_classes = dataset.num_classes - known_class_count
+                    print(
+                        f"  [PROMOTION TRACKER] Promoted: Total {total_prom} | "
+                        f"Known {k_prom} ({k_classes}/{known_class_count} classes) | "
+                        f"Novel {u_prom} ({u_classes}/{novel_total_classes} classes)",
+                        flush=True,
+                    )
 
                 if all_a > best_test_acc:
                     best_test_acc = all_a
@@ -758,6 +845,7 @@ def main(allowed_baseline: str | None = None) -> None:
                             "model": model.state_dict(),
                             "epoch": epoch + 1,
                             "best_test_metrics": test_m,
+                            "promotion_store": paper_store.export_state() if paper_store is not None else {},
                             "config": config,
                         },
                         best_checkpoint_path,
@@ -782,6 +870,25 @@ def main(allowed_baseline: str | None = None) -> None:
                         u_slots = float(gates[known_class_count:].sum(dim=-1).mean().item()) if gates.shape[0] > known_class_count else 0.0
                         print(f"[PROTOTYPE CAMERA] Epoch {epoch + 1}: Gate mean={mean_g:.3f} max={max_g:.3f} frac_open(>0.5)={frac_o:.1%} active_slots_per_class~={active_s:.2f}", flush=True)
                         print(f"  Active Slots/Class: Known ~ {k_slots:.2f} | Novel ~ {u_slots:.2f}", flush=True)
+                        if metric_class_counts is not None and len(metric_class_counts) == gates.shape[0]:
+                            counts_arr = np.asarray(metric_class_counts)
+                            many_mask = counts_arr >= 100
+                            med_mask = (counts_arr >= 20) & (counts_arr < 100)
+                            few_mask = counts_arr < 20
+                            total_slots = gates.sum(dim=-1).cpu().numpy()
+                            m_s = f"{total_slots[many_mask].mean():.2f}" if np.any(many_mask) else "N/A"
+                            md_s = f"{total_slots[med_mask].mean():.2f}" if np.any(med_mask) else "N/A"
+                            f_s = f"{total_slots[few_mask].mean():.2f}" if np.any(few_mask) else "N/A"
+                            print(f"  Active Slots by Shot: Many ~ {m_s} | Med ~ {md_s} | Few ~ {f_s}", flush=True)
+                        if hasattr(bank, "prototype_diagnostics"):
+                            p_diag = bank.prototype_diagnostics(known_class_count)
+                            print(
+                                f"  [PROTOTYPE MONITOR] Known: {p_diag['known_updated_classes']}/{p_diag['known_total_classes']} updated "
+                                f"(avg {p_diag['known_avg_updates']:.0f}/cls, drift={p_diag['known_avg_drift']:.3f}) | "
+                                f"Novel: {p_diag['novel_updated_classes']}/{p_diag['novel_total_classes']} updated "
+                                f"({p_diag['novel_untouched_classes']} untouched!, avg {p_diag['novel_avg_updates']:.1f}/cls, drift={p_diag['novel_avg_drift']:.3f})",
+                                flush=True,
+                            )
                         data = {
                             "epoch": epoch + 1,
                             "num_known_classes": known_class_count,
@@ -789,6 +896,9 @@ def main(allowed_baseline: str | None = None) -> None:
                             "gate_values": gates.detach().cpu().tolist(),
                             "actual_kappa": gates.sum(-1).detach().cpu().tolist(),
                         }
+                        if hasattr(bank, "prototype_diagnostics"):
+                            data["prototype_diagnostics"] = p_diag
+                            data["prototype_update_counts"] = bank.update_counts.detach().cpu().tolist()
                         grad = bank.gate_logits.grad
                         data["gate_grad_l2_last_batch"] = (
                             float(grad.detach().norm().item())
@@ -830,6 +940,7 @@ def main(allowed_baseline: str | None = None) -> None:
                         for name, scheduler in schedulers.items()
                     },
                     "epoch": epoch + 1,
+                    "promotion_store": paper_store.export_state() if paper_store is not None else {},
                     "config": config,
                 },
                 checkpoint_path,
@@ -838,6 +949,8 @@ def main(allowed_baseline: str | None = None) -> None:
     summary_path = output_directory / f"{experiment_name}.summary.json"
     summary_data = {
         "experiment_name": experiment_name,
+        "pseudo_mode": arguments.pseudo_mode if enable_pseudo else "disabled",
+        "promotions_total": len(paper_store.export_state()) if paper_store is not None else 0,
         "baseline": baseline_name,
         "ablation_config": detected_config,
         "dataset_name": dataset_name,
