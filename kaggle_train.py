@@ -357,6 +357,30 @@ def main() -> None:
     parser.add_argument("--ablate-adaptive-capacity", "--ablate_adaptive_capacity", dest="ablate_adaptive_capacity", action="store_true", default=False, help="Ablate adaptive capacity")
     parser.add_argument("--enable-pseudo-labeling", "--enable_pseudo_labeling", dest="enable_pseudo_labeling", action="store_true", default=False, help="Enable pseudo labeling")
     parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
+    parser.add_argument(
+        "--eval-feature-mode",
+        choices=["legacy_concat", "balanced_concat"],
+        default="legacy_concat",
+        help="Evaluation feature concatenation mode: 'legacy_concat' or 'balanced_concat'",
+    )
+    parser.add_argument(
+        "--gate-warm-start-from-support",
+        action="store_true",
+        default=False,
+        help="Init gates from estimated training supports at epoch 0",
+    )
+    parser.add_argument(
+        "--known-frequency-mapping",
+        choices=["direct_hungarian", "bacon_rank"],
+        default="direct_hungarian",
+        help="Known frequency mapping mode: 'direct_hungarian' or 'bacon_rank'",
+    )
+    parser.add_argument(
+        "--require-paper-dual-selection",
+        action="store_true",
+        default=False,
+        help="Fail unless the persistent paper D1/D2 selector is integrated",
+    )
     parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None, help="Kaggle username/account name override")
     args, unknown_args = parser.parse_known_args()
     if args.use_parts:
@@ -506,6 +530,14 @@ def main() -> None:
         cmd.append("--enable-pseudo-labeling")
     if getattr(args, "enable_novel_pseudo", False):
         cmd.append("--enable-novel-pseudo")
+    if getattr(args, "eval_feature_mode", None):
+        cmd.extend(["--eval-feature-mode", str(args.eval_feature_mode)])
+    if getattr(args, "gate_warm_start_from_support", False):
+        cmd.append("--gate-warm-start-from-support")
+    if getattr(args, "known_frequency_mapping", None):
+        cmd.extend(["--known-frequency-mapping", str(args.known_frequency_mapping)])
+    if getattr(args, "require_paper_dual_selection", False):
+        cmd.append("--require-paper-dual-selection")
     if args.lr is not None:
         cmd.extend(["--lr", str(args.lr)])
     if args.fp16:
@@ -526,6 +558,9 @@ def main() -> None:
     print("\n" + "=" * 65)
     print("Training finished successfully!")
     print(f"Artifacts and metrics saved to: {output_dir}")
+    summary_file = output_dir / f"{run_name}.summary.json"
+    if summary_file.is_file():
+        print(f"Training summary saved to:   {summary_file}")
     print("=" * 65)
 
 

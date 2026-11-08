@@ -86,6 +86,15 @@ class PartPrototypeBank(nn.Module):
         )
         return targets.clamp(1.0, float(self.num_slots))
 
+    @torch.no_grad()
+    def warm_start_from_estimated_support(self, frequencies: torch.Tensor) -> None:
+        """NON-PAPER-DEFAULT: approximate the target gate mass at init."""
+        target = self.target_capacities(frequencies.to(self.gate_logits.device))
+        # Avoid exact 0/1: otherwise the sigmoid gradient would vanish.
+        per_slot = (target / self.num_slots).clamp(0.02, 0.98)
+        logits = torch.logit(per_slot).unsqueeze(-1)
+        self.gate_logits.copy_(logits.expand_as(self.gate_logits))
+
     def forward(
         self,
         parts: torch.Tensor,
@@ -530,8 +539,17 @@ class ProtoTailPlugin:
         pooled_parts = pooled_parts / gates.sum(dim=-1, keepdim=True).clamp_min(
             1e-6
         )
+        feature_mode = self.config.get("eval_feature_mode", "legacy_concat")
+        if feature_mode == "balanced_concat":
+            # Evaluation-only change: scale each branch before concatenation.
+            global_for_eval = F.normalize(global_features, dim=-1)
+            part_for_eval = F.normalize(pooled_parts, dim=-1)
+        elif feature_mode == "legacy_concat":
+            global_for_eval, part_for_eval = global_features, pooled_parts
+        else:
+            raise ValueError(f"Unknown eval_feature_mode: {feature_mode}")
         features = F.normalize(
-            torch.cat((global_features, pooled_parts), dim=-1),
+            torch.cat((global_for_eval, part_for_eval), dim=-1),
             dim=-1,
         )
         return PredictionOutput(class_ids=None, features=features)

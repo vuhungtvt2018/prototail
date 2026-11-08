@@ -307,6 +307,30 @@ def main(allowed_baseline: str | None = None) -> None:
         default=300,
         help="Maximum KMeans iterations",
     )
+    parser.add_argument(
+        "--eval-feature-mode",
+        choices=["legacy_concat", "balanced_concat"],
+        default="legacy_concat",
+        help="Evaluation feature concatenation mode: 'legacy_concat' (unscaled) or 'balanced_concat' (L2-norm each branch)",
+    )
+    parser.add_argument(
+        "--gate-warm-start-from-support",
+        action="store_true",
+        default=False,
+        help="NON-PAPER-DEFAULT: init gates from estimated training supports at epoch 0",
+    )
+    parser.add_argument(
+        "--known-frequency-mapping",
+        choices=["direct_hungarian", "bacon_rank"],
+        default="direct_hungarian",
+        help="Known frequency mapping mode: 'direct_hungarian' (Appendix B literal) or 'bacon_rank' (BaCon dist_est.py)",
+    )
+    parser.add_argument(
+        "--require-paper-dual-selection",
+        action="store_true",
+        default=False,
+        help="Fail unless the persistent paper D1/D2 selector is integrated",
+    )
     arguments, _ = parser.parse_known_args()
     if arguments.kmeans_backend is None:
         target_device = torch.device(
@@ -349,6 +373,12 @@ def main(allowed_baseline: str | None = None) -> None:
     ablate_capacity = bool(arguments.ablate_adaptive_capacity)
     enable_pseudo = bool(arguments.enable_pseudo_labeling)
     enable_novel = bool(arguments.enable_novel_pseudo)
+    if arguments.require_paper_dual_selection and (enable_pseudo or enable_novel):
+        raise NotImplementedError(
+            "Paper Full requires persistent known/novel promotion "
+            "(Eq. 9-11, Algorithm 1, Appendix B). Current per-batch "
+            "pseudo-CE is NOT the paper selector."
+        )
 
     method_config = config.get("method", {})
     if not isinstance(method_config, dict):
@@ -374,6 +404,8 @@ def main(allowed_baseline: str | None = None) -> None:
         method_settings["pseudo_warmup_epochs"] = arguments.pseudo_warmup_epochs
     if arguments.pseudo_confidence is not None:
         method_settings["pseudo_confidence"] = arguments.pseudo_confidence
+    if arguments.eval_feature_mode is not None:
+        method_settings["eval_feature_mode"] = arguments.eval_feature_mode
     method = None
     if method_enabled:
         method_name = method_config.get("name")
@@ -515,6 +547,8 @@ def main(allowed_baseline: str | None = None) -> None:
     context["kmeans_backend"] = arguments.kmeans_backend
     context["kmeans_n_init"] = arguments.kmeans_n_init
     context["kmeans_max_iter"] = arguments.kmeans_max_iter
+    context["known_frequency_mapping"] = arguments.known_frequency_mapping
+    context["gate_warm_start_from_support"] = bool(arguments.gate_warm_start_from_support)
     context["needs_frequency_estimate"] = (
         baseline_name == "bacon"
         or (
@@ -522,11 +556,19 @@ def main(allowed_baseline: str | None = None) -> None:
             and float(method_settings.get("capacity_regularization_weight", 0)) > 0
         )
     )
+    if arguments.gate_warm_start_from_support and not context["needs_frequency_estimate"]:
+        raise ValueError("Gate warm-start requires tail-aware frequency estimation")
+
     config["kmeans_runtime"] = {
         "backend": arguments.kmeans_backend,
         "n_init": arguments.kmeans_n_init,
         "max_iter": arguments.kmeans_max_iter,
+        "parity_note": (
+            "FAISS GPU and sklearn KMeans do not guarantee identical "
+            "initialization or assignments"
+        ),
     }
+    config.setdefault("frequency_runtime", {})["known_mapping"] = arguments.known_frequency_mapping
 
     # Determine explicit ablation configuration name
     if not method_enabled and not enable_pseudo:
@@ -589,12 +631,20 @@ def main(allowed_baseline: str | None = None) -> None:
         tail_debug_path.write_text("", encoding="utf-8")
     checkpoint_path = output_directory / f"{experiment_name}.pt"
     best_checkpoint_path = output_directory / f"{experiment_name}.best.pt"
+    best_unl_checkpoint_path = output_directory / f"{experiment_name}.best_unl.pt"
     metrics_path = output_directory / f"{experiment_name}.metrics.jsonl"
     config_path = output_directory / f"{experiment_name}.config.yaml"
     with config_path.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(config, stream, sort_keys=False)
 
     best_test_acc = -1.0
+    best_test_epoch = -1
+    best_test_metrics: dict[str, Any] = {}
+    best_unl_acc = -1.0
+    best_unl_epoch = -1
+    best_unl_metrics: dict[str, Any] = {}
+    final_test_metrics: dict[str, Any] = {}
+    final_unl_metrics: dict[str, Any] = {}
     known_class_count = len(dataset.known_class_ids)
     eval_interval = (
         arguments.eval_interval
@@ -660,9 +710,25 @@ def main(allowed_baseline: str | None = None) -> None:
             metrics_file.flush()
             if "unlabeled_train" in record:
                 ut = record["unlabeled_train"]
-                print(f"[UNLABELED-TRAIN EVAL] Epoch {epoch + 1}: All {ut.get('all_acc', 0.0):.2f} | Known {ut.get('known_acc', 0.0):.2f} | Novel {ut.get('novel_acc', 0.0):.2f} | H-Score {ut.get('h_score', 0.0):.2f}", flush=True)
+                all_u = ut.get("all_acc", 0.0)
+                print(f"[UNLABELED-TRAIN EVAL] Epoch {epoch + 1}: All {all_u:.2f} | Known {ut.get('known_acc', 0.0):.2f} | Novel {ut.get('novel_acc', 0.0):.2f} | H-Score {ut.get('h_score', 0.0):.2f}", flush=True)
                 if "k_many" in ut and ut["k_many"] is not None and ut["k_many"] >= 0:
                     print(f"  Shot Breakdown (Train): Known [Many: {ut.get('k_many', 0.0):.2f}, Med: {ut.get('k_med', 0.0):.2f}, Few: {ut.get('k_few', 0.0):.2f}] | Novel [Many: {ut.get('u_many', 0.0):.2f}, Med: {ut.get('u_med', 0.0):.2f}, Few: {ut.get('u_few', 0.0):.2f}]", flush=True)
+
+                if all_u > best_unl_acc:
+                    best_unl_acc = all_u
+                    best_unl_epoch = epoch + 1
+                    best_unl_metrics = dict(ut)
+                    torch.save(
+                        {
+                            "model": model.state_dict(),
+                            "epoch": epoch + 1,
+                            "best_unlabeled_metrics": ut,
+                            "config": config,
+                        },
+                        best_unl_checkpoint_path,
+                    )
+                    print(f"  [*] New best Unlabeled-Train All Acc: {best_unl_acc:.2f}% -> saved to {best_unl_checkpoint_path.name}", flush=True)
 
             if "test" in record:
                 test_m = record["test"]
@@ -685,6 +751,8 @@ def main(allowed_baseline: str | None = None) -> None:
 
                 if all_a > best_test_acc:
                     best_test_acc = all_a
+                    best_test_epoch = epoch + 1
+                    best_test_metrics = dict(test_m)
                     torch.save(
                         {
                             "model": model.state_dict(),
@@ -694,7 +762,13 @@ def main(allowed_baseline: str | None = None) -> None:
                         },
                         best_checkpoint_path,
                     )
-                    print(f"  [*] New best test All Acc: {best_test_acc:.2f}% -> saved to {best_checkpoint_path.name}", flush=True)
+                    print(f"  [*] New best Disjoint-Test All Acc: {best_test_acc:.2f}% -> saved to {best_checkpoint_path.name}", flush=True)
+
+            if is_last_epoch:
+                if "test" in record:
+                    final_test_metrics = dict(record["test"])
+                if "unlabeled_train" in record:
+                    final_unl_metrics = dict(record["unlabeled_train"])
             if method is not None and ((epoch + 1) % 10 == 0 or is_last_epoch):
                 try:
                     with torch.no_grad():
@@ -731,6 +805,15 @@ def main(allowed_baseline: str | None = None) -> None:
                             data["capacity_mae"] = float(
                                 (gates.sum(-1) - desired).abs().mean().item()
                             )
+                            if epoch + 1 >= 30 and float(data["capacity_mae"]) > 0.5:
+                                print(
+                                    "[TAIL_WARNING] Capacity target not reached: "
+                                    f"epoch={epoch+1} "
+                                    f"capacity_mae={data['capacity_mae']:.4f} "
+                                    f"actual_mean={active_s:.3f} "
+                                    f"target_mean={desired.mean().item():.3f}",
+                                    flush=True,
+                                )
                         with tail_debug_path.open("a", encoding="utf-8") as stream:
                             stream.write(json.dumps(data, allow_nan=False) + "\n")
                 except Exception as error:
@@ -751,6 +834,67 @@ def main(allowed_baseline: str | None = None) -> None:
                 },
                 checkpoint_path,
             )
+
+    summary_path = output_directory / f"{experiment_name}.summary.json"
+    summary_data = {
+        "experiment_name": experiment_name,
+        "baseline": baseline_name,
+        "ablation_config": detected_config,
+        "dataset_name": dataset_name,
+        "imbalance_ratio": config["data"]["protocol"].get("imbalance_ratio"),
+        "total_epochs": epoch_count,
+        "best_unlabeled_epoch": best_unl_epoch,
+        "best_test_epoch": best_test_epoch,
+        "best_unlabeled_train_metrics": best_unl_metrics,
+        "best_test_metrics": best_test_metrics,
+        "final_test_metrics": final_test_metrics,
+        "final_unlabeled_train_metrics": final_unl_metrics,
+        "checkpoint_final": str(checkpoint_path.name),
+        "checkpoint_best_unlabeled": str(best_unl_checkpoint_path.name),
+        "checkpoint_best_test": str(best_checkpoint_path.name),
+    }
+    with summary_path.open("w", encoding="utf-8") as stream:
+        json.dump(summary_data, stream, indent=2, sort_keys=True)
+
+    def _format_eval_line(label: str, m: dict[str, Any]) -> str:
+        if not m:
+            return f"  {label:<18} (No evaluation record)"
+        all_v = m.get("all_acc", 0.0)
+        k_v = m.get("known_acc", 0.0)
+        n_v = m.get("novel_acc", 0.0)
+        h_v = m.get("h_score", 0.0)
+        line = f"  {label:<18} All: {all_v:6.2f}% | Known: {k_v:6.2f}% | Novel: {n_v:6.2f}% | H-Score: {h_v:6.2f}%"
+        if "k_many" in m and m["k_many"] is not None and m["k_many"] >= 0:
+            line += (
+                f"\n    Shot Breakdown:   Known [Many: {m.get('k_many', 0.0):.2f}, Med: {m.get('k_med', 0.0):.2f}, Few: {m.get('k_few', 0.0):.2f}]"
+                f"\n                      Novel [Many: {m.get('u_many', 0.0):.2f}, Med: {m.get('u_med', 0.0):.2f}, Few: {m.get('u_few', 0.0):.2f}]"
+            )
+        return line
+
+    print("\n" + "=" * 78)
+    print("                      PROTOTAIL TRAINING SUMMARY")
+    print("=" * 78)
+    print(f"Run Name:          {experiment_name}")
+    print(f"Ablation Setting:  {detected_config}")
+    print(f"Dataset / Split:   {dataset_name} (imb_ratio={config['data']['protocol'].get('imbalance_ratio', 'N/A')})")
+    print(f"Total Epochs:      {epoch_count}")
+    print("-" * 78)
+    print(f"[FINAL MODEL - PAPER PROTOCOL] (Epoch {epoch_count}):")
+    print(_format_eval_line("Disjoint Test:", final_test_metrics))
+    if final_unl_metrics:
+        print(_format_eval_line("Unlabeled Train:", final_unl_metrics))
+    print(f"  Checkpoint File:   {checkpoint_path.name}")
+    print("-" * 78)
+    print(f"[BEST UNLABELED-TRAIN MODEL]   (Achieved at Epoch {best_unl_epoch}):")
+    print(_format_eval_line("Unlabeled Train:", best_unl_metrics))
+    print(f"  Checkpoint File:   {best_unl_checkpoint_path.name}")
+    print("-" * 78)
+    print(f"[BEST DISJOINT-TEST MODEL]     (Achieved at Epoch {best_test_epoch}):")
+    print(_format_eval_line("Disjoint Test:", best_test_metrics))
+    print(f"  Checkpoint File:   {best_checkpoint_path.name}")
+    print("-" * 78)
+    print(f"Summary JSON:      {summary_path.name}")
+    print("=" * 78 + "\n", flush=True)
 
 
 if __name__ == "__main__":

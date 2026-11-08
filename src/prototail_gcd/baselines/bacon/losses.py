@@ -1,6 +1,7 @@
 """BaCon-native losses and distribution estimation."""
 
 from typing import Any
+import warnings
 
 import numpy as np
 import torch
@@ -60,6 +61,7 @@ def estimate_class_frequencies(
     kmeans_backend: str = "faiss_gpu",
     kmeans_n_init: int = 10,
     kmeans_max_iter: int = 300,
+    known_frequency_mapping: str = "direct_hungarian",
 ) -> torch.Tensor:
     from prototail_gcd.models.dino_backbone import forward_global_and_patches
 
@@ -139,13 +141,33 @@ def estimate_class_frequencies(
     estimate = np.ones(num_classes, dtype=np.float32)
     if len(known_cluster_ids) != num_known_classes:
         raise RuntimeError("known-class frequency alignment is incomplete")
-    for class_id in range(num_known_classes):
-        # Preserve the Hungarian class -> cluster assignment.
-        estimate[class_id] = cluster_counts[cluster_for_class[class_id]]
+    if known_frequency_mapping == "direct_hungarian":
+        # Literal reading of paper Appendix B.
+        for class_id in range(num_known_classes):
+            estimate[class_id] = cluster_counts[cluster_for_class[class_id]]
+    elif known_frequency_mapping == "bacon_rank":
+        # BaCon model/dist_est.py: known support rank matching.
+        known_labeled_support = np.bincount(
+            all_targets[all_labeled],
+            minlength=num_known_classes,
+        )[:num_known_classes]
+        known_by_support = np.argsort(known_labeled_support, kind="stable")
+        sorted_known_cluster_sizes = np.sort(cluster_counts[known_cluster_ids])
+        estimate[known_by_support] = sorted_known_cluster_sizes
+    else:
+        raise ValueError(f"Unsupported known_frequency_mapping mode: {known_frequency_mapping}")
 
     novel_cluster_ids = sorted(set(range(num_classes)) - set(known_cluster_ids))
     novel_cluster_counts = np.sort(cluster_counts[novel_cluster_ids])[::-1]
     novel_count = num_classes - num_known_classes
+    if novel_count:
+        warnings.warn(
+            "Novel support sizes are rank-assigned to classifier output IDs "
+            "without cluster-to-logit correspondence (BaCon reference heuristic). "
+            "Do not interpret per-novel-class capacity targets as verified support.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     estimate[num_known_classes:] = novel_cluster_counts[:novel_count]
     return torch.as_tensor(estimate, dtype=torch.float32, device=device)
 

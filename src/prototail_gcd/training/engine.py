@@ -71,6 +71,9 @@ class TrainingEngine:
         batch: TrainingBatch,
         epoch: int,
     ) -> dict[str, float]:
+        store = self.context.get("persistent_promotion_store")
+        if store is not None:
+            batch = store.inject(batch)
         device = next(self.model.parameters()).device
         batch = batch.to(device)
         self.model.train()

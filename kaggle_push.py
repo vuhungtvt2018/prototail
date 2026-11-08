@@ -136,6 +136,30 @@ def main():
         default="NvidiaTeslaT4",
         help="Hardware accelerator to request on Kaggle ('NvidiaTeslaT4' allocates Dual NVIDIA T4 GPUs)",
     )
+    parser.add_argument(
+        "--eval-feature-mode",
+        choices=["legacy_concat", "balanced_concat"],
+        default="legacy_concat",
+        help="Evaluation feature concatenation mode ('legacy_concat' or 'balanced_concat')",
+    )
+    parser.add_argument(
+        "--gate-warm-start-from-support",
+        action="store_true",
+        default=False,
+        help="Init gates from estimated training supports at epoch 0 (LT-02 fix)",
+    )
+    parser.add_argument(
+        "--known-frequency-mapping",
+        choices=["direct_hungarian", "bacon_rank"],
+        default="direct_hungarian",
+        help="Known frequency mapping mode ('direct_hungarian' or 'bacon_rank')",
+    )
+    parser.add_argument(
+        "--require-paper-dual-selection",
+        action="store_true",
+        default=False,
+        help="Fail unless the persistent paper D1/D2 selector is integrated",
+    )
     parser.add_argument("--dry-run", "--dry_run", dest="dry_run", action="store_true", help="Build kernel locally without pushing")
     args = parser.parse_args()
     name_map = {
@@ -164,6 +188,15 @@ def main():
         flags.extend(["--use-parts", "--ablate-adaptive-capacity", "--enable-pseudo-labeling", "--enable-novel-pseudo"])
     elif args.config == "Full":
         flags.extend(["--use-parts", "--enable-pseudo-labeling", "--enable-novel-pseudo"])
+
+    if args.eval_feature_mode != "legacy_concat":
+        flags.extend(["--eval-feature-mode", args.eval_feature_mode])
+    if args.gate_warm_start_from_support:
+        flags.append("--gate-warm-start-from-support")
+    if args.known_frequency_mapping != "direct_hungarian":
+        flags.extend(["--known-frequency-mapping", args.known_frequency_mapping])
+    if args.require_paper_dual_selection:
+        flags.append("--require-paper-dual-selection")
 
     exp_name = f"{args.baseline}_{args.dataset_name}_{args.config}_imb{args.imb_ratio}"
     kernel_slug = f"prototail-{args.baseline}-{args.dataset_name}-{args.config.lower()}-imb{args.imb_ratio}".replace("_", "-")

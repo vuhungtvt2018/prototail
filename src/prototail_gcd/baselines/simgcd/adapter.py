@@ -223,9 +223,14 @@ class SimGCDAdapter:
                 kmeans_backend=str(context.get("kmeans_backend", "faiss_gpu")),
                 kmeans_n_init=int(context.get("kmeans_n_init", 10)),
                 kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
+                known_frequency_mapping=str(context.get("known_frequency_mapping", "direct_hungarian")),
             )
         finally:
             model.train()
+        if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
+            if not hasattr(model, "prototail"):
+                raise RuntimeError("Gate warm-start requires an attached ProtoTail module")
+            model.prototail.prototypes.warm_start_from_estimated_support(frequencies)
         return {"estimated_frequencies": frequencies}
 
     def after_optimizer_step(

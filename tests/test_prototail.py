@@ -459,6 +459,44 @@ class ProtoTailTests(unittest.TestCase):
         self.assertEqual(tuple(prediction.features.shape), (2, 8))
         self.assertEqual(set(diagnostics), {"fused", "global"})
 
+    def test_warm_start_from_estimated_support(self):
+        torch = self.torch
+        plugin = self.plugin_type()
+        model = torch.nn.Linear(4, 3)
+        plugin.attach(model, {"num_slots": 3}, 3, 4)
+        bank = plugin.components.prototypes
+
+        freqs = torch.tensor([1.0, 10.0, 100.0])
+        bank.warm_start_from_estimated_support(freqs)
+        active_slots = bank.gates().sum(dim=-1)
+        self.assertAlmostEqual(active_slots[0].item(), 1.0, places=2)
+        self.assertAlmostEqual(active_slots[1].item(), 2.0, places=2)
+        self.assertAlmostEqual(active_slots[2].item(), 2.94, places=1)
+
+    def test_eval_feature_mode_balanced_vs_legacy(self):
+        torch = self.torch
+        plugin_legacy = self.plugin_type()
+        plugin_balanced = self.plugin_type()
+        model1 = torch.nn.Linear(4, 3)
+        model2 = torch.nn.Linear(4, 3)
+        plugin_legacy.attach(model1, {"num_slots": 2, "eval_feature_mode": "legacy_concat"}, 3, 4)
+        plugin_balanced.attach(model2, {"num_slots": 2, "eval_feature_mode": "balanced_concat"}, 3, 4)
+
+        global_features = torch.tensor([[100.0, 0.0, 0.0, 0.0]])
+        output = self.contracts.ModelOutput(
+            branches={
+                "student": self.contracts.BranchOutput(
+                    global_features=global_features,
+                    patch_tokens=torch.randn(1, 5, 4),
+                    logits=torch.randn(1, 3),
+                )
+            }
+        )
+        pred_legacy = plugin_legacy.predict(plugin_legacy.augment_output(output))
+        pred_balanced = plugin_balanced.predict(plugin_balanced.augment_output(output))
+
+        self.assertFalse(torch.allclose(pred_legacy.features, pred_balanced.features))
+
 
 if __name__ == "__main__":
     unittest.main()
