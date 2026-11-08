@@ -30,6 +30,20 @@ class PromotionStore:
                 n_added += 1
         return n_added
 
+    def lookup(self, batch: TrainingBatch) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return accepted pseudo targets separately from ground-truth labels."""
+        ids = batch.sample_ids.detach().cpu().tolist()
+        targets = torch.full_like(batch.known_targets, -1)
+        mask = torch.zeros_like(batch.labeled_mask, dtype=torch.bool)
+        for i, sample_id in enumerate(ids):
+            if bool(batch.labeled_mask[i]):
+                continue
+            promoted = self._labels.get(int(sample_id))
+            if promoted is not None:
+                targets[i] = promoted
+                mask[i] = True
+        return targets, mask
+
     def inject(self, batch: TrainingBatch) -> TrainingBatch:
         """Make accepted unlabeled samples supervised whenever sampled."""
         ids = batch.sample_ids.detach().cpu().tolist()

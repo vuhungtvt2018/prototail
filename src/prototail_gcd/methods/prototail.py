@@ -116,6 +116,9 @@ class PartPrototypeBank(nn.Module):
         )
         scores = (similarities * gates.unsqueeze(0)).sum(dim=-1)
         scores = scores / (gates.sum(dim=-1).unsqueeze(0) + 1e-6)
+        # An untouched prototype is an arbitrary orthogonal vector, not evidence.
+        initialized = self.update_counts.to(scores.device) > 0
+        scores = scores.masked_fill(~initialized.unsqueeze(0), 0.0)
         return scores, similarities, gates
 
     @torch.no_grad()
@@ -129,11 +132,15 @@ class PartPrototypeBank(nn.Module):
             mask = labels == class_id
             centroid = parts[mask].mean(dim=0)
             class_index = int(class_id.item())
-            self.prototypes[class_index] = F.normalize(
-                momentum * self.prototypes[class_index]
-                + (1.0 - momentum) * centroid,
-                dim=-1,
-            )
+            if self.update_counts[class_index] == 0:
+                # EMA(0.99) of a random vector is not a valid first estimate.
+                self.prototypes[class_index] = F.normalize(centroid, dim=-1)
+            else:
+                self.prototypes[class_index] = F.normalize(
+                    momentum * self.prototypes[class_index]
+                    + (1.0 - momentum) * centroid,
+                    dim=-1,
+                )
             self.update_counts[class_index] += 1
 
     @torch.no_grad()
@@ -154,11 +161,14 @@ class PartPrototypeBank(nn.Module):
             centroid = (parts[mask] * weights).sum(dim=0)
             centroid = centroid / weights.sum(dim=0).clamp_min(1e-6)
             class_index = int(class_id.item())
-            self.prototypes[class_index] = F.normalize(
-                momentum * self.prototypes[class_index]
-                + (1.0 - momentum) * centroid,
-                dim=-1,
-            )
+            if self.update_counts[class_index] == 0:
+                self.prototypes[class_index] = F.normalize(centroid, dim=-1)
+            else:
+                self.prototypes[class_index] = F.normalize(
+                    momentum * self.prototypes[class_index]
+                    + (1.0 - momentum) * centroid,
+                    dim=-1,
+                )
             self.update_counts[class_index] += 1
 
     @torch.no_grad()
@@ -313,8 +323,10 @@ class ProtoTailPlugin:
         losses: dict[str, torch.Tensor] = {}
         if is_simgcd:
             view_count = logits.shape[0] // batch_size
+            # Base SimGCD already optimizes global CE. This auxiliary CE should
+            # train local parts/gates, not add a second global-classifier gradient.
             fused_logits = (
-                logits
+                logits.detach()
                 + float(self.config.get("part_weight", 0.5)) * part_scores
             )
             repeated_mask = labeled.repeat(view_count)
@@ -502,8 +514,6 @@ class ProtoTailPlugin:
             int(self.config.get("prototype_warmup_epochs", 30)),
             total_epochs - 1,
         )
-        if epoch < prototype_start:
-            return
         is_simgcd = "student" in output.branches
 
         batch_size = int(batch.sample_ids.numel())
@@ -518,9 +528,12 @@ class ProtoTailPlugin:
         momentum = float(self.config.get("prototype_momentum", 0.99))
 
         if torch.any(labeled):
-            # Known EMA continues through the end of training (Appendix B).
+            # Bootstrap known prototypes immediately from ground-truth labeled data.
             bank.update_known(parts[labeled], labels[labeled], momentum)
 
+        # Novel unlabelled prototypes remain protected by their warmup schedule.
+        if epoch < prototype_start:
+            return
         unlabeled = ~labeled
         if not torch.any(unlabeled):
             return

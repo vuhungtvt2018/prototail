@@ -68,6 +68,7 @@ class PaperDualSelector:
         self.previous_accepted_dbi: float | None = None
         self.executed_known: set[int] = set()
         self.executed_novel: set[int] = set()
+        self.selected_known_classes: set[int] = set()
 
     def scheduled(self, epoch: int) -> bool:
         return epoch in self.known_epochs or epoch in self.novel_epochs
@@ -117,26 +118,43 @@ class PaperDualSelector:
 
     def select_known(self, snap: Snapshot, store: Any) -> dict[str, Any]:
         promoted = store.export_state()
-        targets = snap.known_targets.copy()
-        pool = snap.originally_labeled.copy()
-        by_id = {int(v): i for i, v in enumerate(snap.sample_ids)}
-        for sample_id, class_id in promoted.items():
-            idx = by_id.get(int(sample_id))
-            if idx is not None:
-                pool[idx] = True
-                targets[idx] = int(class_id)
+        # Reliability must be anchored in ORIGINAL labeled ground truth only.
+        # Using promoted pseudo labels here makes accuracy self-confirming.
+        targets = snap.known_targets
+        pool = snap.originally_labeled
         preds = snap.probs.argmax(axis=1)
         accuracies = np.full(self.n_known, -1.0, dtype=np.float32)
+        smoothed = np.full(self.n_known, -1.0, dtype=np.float32)
+        mean_conf = np.zeros(self.n_known, dtype=np.float32)
         for c in range(self.n_known):
             which = pool & (targets == c)
-            if np.any(which):
-                accuracies[c] = float(np.mean(preds[which] == c))
+            n = int(which.sum())
+            if n:
+                correct = int((preds[which] == c).sum())
+                accuracies[c] = correct / n
+                smoothed[c] = (correct + 1.0) / (n + 2.0)
+                mean_conf[c] = float(snap.probs[which, c].mean())
         if np.all(accuracies < 0):
             return {"accepted": 0, "reason": "no_supervised_known_classes"}
-        # Sort classes by supervised accuracy; choose only one class this round.
-        # Skip exhausted classes to avoid rounds with no candidates.
-        eligible = ~pool
-        for c in np.argsort(-accuracies, kind="stable"):
+        # A promoted sample cannot be selected again, but is NEVER a GT label.
+        eligible = ~pool.copy()
+        by_id = {int(v): i for i, v in enumerate(snap.sample_ids)}
+        for sample_id in promoted:
+            idx = by_id.get(int(sample_id))
+            if idx is not None:
+                eligible[idx] = False
+        # Prefer classes not yet selected, avoid class-ID tie artifacts; use
+        # smoothed GT accuracy and confidence to break 100%-accuracy ties.
+        ranking = sorted(
+            range(self.n_known),
+            key=lambda c: (
+                int(c in self.selected_known_classes),
+                -float(smoothed[c]),
+                -float(mean_conf[c]),
+                c,
+            ),
+        )
+        for c in ranking:
             if accuracies[c] < 0:
                 continue
             candidate_indices = np.flatnonzero(eligible & (preds == c))
@@ -148,7 +166,13 @@ class PaperDualSelector:
             ][:n_keep]
             pairs = [(int(snap.sample_ids[i]), int(c)) for i in sorted_indices]
             accepted = store.add_accepted(pairs)
-            return {"accepted": accepted, "class_id": int(c), "supervised_accuracy": float(accuracies[c])}
+            if accepted:
+                self.selected_known_classes.add(int(c))
+            return {
+                "accepted": accepted, "class_id": int(c),
+                "supervised_accuracy": float(accuracies[c]),
+                "smoothed_reliability": float(smoothed[c]),
+            }
         return {"accepted": 0, "reason": "no_eligible_known_predictions"}
 
     def _partition(self, features: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:

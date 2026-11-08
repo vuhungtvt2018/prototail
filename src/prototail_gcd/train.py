@@ -570,12 +570,21 @@ def main(allowed_baseline: str | None = None) -> None:
             novel_epochs=(50, 60, 70, 80, 90, 100) if enable_novel else (),
         )
         context["persistent_promotion_store"] = paper_store
-        # Paper supervision comes from persistent promotions, not extra CE.
-        # Keep all native baseline distillation/contrastive objectives intact.
-        context["enable_pseudo_labeling"] = False
-        context["enable_novel_pseudo"] = False
-        baseline_config["enable_pseudo_labeling"] = False
-        baseline_config["enable_novel_pseudo"] = False
+        if baseline_name == "simgcd":
+            # SimGCD Full: retain dynamic pseudo-CE alongside D1/D2 memory.
+            # Promoted proposals become gated auxiliary CE, not GT/SupCon.
+            context["paper_promotion_weight"] = float(
+                method_settings.get("paper_promotion_weight", 0.1)
+            )
+            context["paper_promotion_min_confidence"] = float(
+                method_settings.get("paper_promotion_min_confidence", 0.7)
+            )
+        else:
+            # Do not silently change the BaCon adapter's existing protocol.
+            context["enable_pseudo_labeling"] = False
+            context["enable_novel_pseudo"] = False
+            baseline_config["enable_pseudo_labeling"] = False
+            baseline_config["enable_novel_pseudo"] = False
     context["kmeans_backend"] = arguments.kmeans_backend
     context["kmeans_n_init"] = arguments.kmeans_n_init
     context["kmeans_max_iter"] = arguments.kmeans_max_iter
@@ -588,7 +597,13 @@ def main(allowed_baseline: str | None = None) -> None:
             else "bacon_rank"
         )
     context["novel_frequency_mapping"] = novel_map_mode
-    context["gate_warm_start_from_support"] = bool(arguments.gate_warm_start_from_support)
+    # Start Tail-aware gates at their own support budgets instead of leaving
+    # sigmoid(-1) at kappa~0.81 against targets 2.2-2.4 for 200 epochs.
+    context["gate_warm_start_from_support"] = bool(
+        arguments.gate_warm_start_from_support
+        or (method_enabled and not ablate_capacity
+            and float(method_settings.get("capacity_regularization_weight", 0.0)) > 0)
+    )
     context["needs_frequency_estimate"] = (
         baseline_name == "bacon"
         or (

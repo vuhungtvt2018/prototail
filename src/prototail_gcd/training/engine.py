@@ -5,6 +5,41 @@ from typing import Any, Iterable, Mapping
 import torch
 
 from prototail_gcd.contracts import TrainingBatch
+import torch.nn.functional as F
+
+
+def promoted_consistency_loss(
+    logits: torch.Tensor,
+    batch: TrainingBatch,
+    store: Any,
+    *,
+    temperature: float,
+    min_confidence: float,
+) -> tuple[torch.Tensor, int]:
+    """Auxiliary CE for *currently stable* persistent proposals (SimGCD only).
+
+    Ground-truth supervised masks, SupCon and prototype GT updates are untouched.
+    """
+    targets, accepted = store.lookup(batch)
+    zero = logits.sum() * 0.0
+    if len(batch.views) < 2 or not bool(accepted.any()):
+        return zero, 0
+    views = logits.float().chunk(len(batch.views), dim=0)
+    if any(x.shape[0] != len(batch.sample_ids) for x in views):
+        raise ValueError("promoted loss view alignment mismatch")
+    with torch.no_grad():
+        probs = torch.stack([(x / temperature).softmax(-1) for x in views])
+        preds = probs.argmax(dim=-1)
+        confidence = probs.max(dim=-1).values
+        stable = accepted & (preds == targets.unsqueeze(0)).all(0)
+        stable = stable & (confidence >= min_confidence).all(0)
+    if not bool(stable.any()):
+        return zero, 0
+    ce = torch.stack([
+        F.cross_entropy(x[stable] / temperature, targets[stable])
+        for x in views
+    ]).mean()
+    return ce, int(stable.sum().item())
 
 
 
@@ -72,7 +107,10 @@ class TrainingEngine:
         epoch: int,
     ) -> dict[str, float]:
         store = self.context.get("persistent_promotion_store")
-        if store is not None:
+        # SimGCD keeps true labels in its supervised contrastive objective;
+        # promoted samples receive separate, confidence-gated supervision.
+        # Preserve the existing BaCon promotion behavior outside this track.
+        if store is not None and self.baseline.name != "simgcd":
             batch = store.inject(batch)
         device = next(self.model.parameters()).device
         batch = batch.to(device)
@@ -134,6 +172,23 @@ class TrainingEngine:
                 if "loss_ce" in losses:
                     losses["loss_ce"] = losses["loss_ce"] + method_total
                 total_loss = losses["total"]
+
+            if store is not None and "student" in output.branches:
+                branch = output.branches["student"]
+                promotion_loss, promotion_count = promoted_consistency_loss(
+                    branch.logits,
+                    batch,
+                    store,
+                    temperature=float(self.baseline_config.get("student_temp", 0.1)),
+                    min_confidence=float(self.context.get("paper_promotion_min_confidence", 0.7)),
+                )
+                # Keep D1/D2 active, but do not train noise as GT in SupCon.
+                total_loss = total_loss + float(
+                    self.context.get("paper_promotion_weight", 0.1)
+                ) * promotion_loss
+                losses["paper_promotion_ce"] = promotion_loss
+                losses["paper_promotion_kept"] = total_loss.new_tensor(float(promotion_count))
+                losses["total"] = total_loss
 
         if self.use_fp16 and device.type == "cuda":
             self.scaler.scale(total_loss).backward()
