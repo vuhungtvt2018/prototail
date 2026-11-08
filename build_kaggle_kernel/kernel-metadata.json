@@ -1,6 +1,6 @@
 {
-  "id": "sanjivinsmoker/prototail-simgcd-cars-full-imb50",
-  "title": "ProtoTail simgcd_cars_Full_imb50",
+  "id": "zoroswordsman/prototail-simgcd-cars-full-imb20",
+  "title": "ProtoTail simgcd_cars_Full_imb20",
   "code_file": "run_script.py",
   "language": "python",
   "kernel_type": "script",
@@ -8,6 +8,8 @@
   "enable_gpu": "true",
   "enable_tpu": "false",
   "enable_internet": "true",
+  "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4",
   "dataset_sources": [
     "nguyntrnminhtm/gcd-data"
   ],

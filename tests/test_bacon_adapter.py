@@ -57,16 +57,12 @@ class BaConAdapterTests(unittest.TestCase):
             def eval(self):
                 return self
 
-        class FixedKMeans:
-            def __init__(self, **_kwargs):
-                pass
-
-            def fit_predict(self, _features):
-                return cluster_assignments
-
         global_features = torch.zeros(cluster_assignments.size, 4)
         with (
-            patch.object(self.losses, "KMeans", FixedKMeans),
+            patch.object(
+                self.losses, "fit_predict_kmeans",
+                return_value=cluster_assignments,
+            ),
             patch(
                 "prototail_gcd.models.dino_backbone.forward_global_and_patches",
                 return_value=(global_features, None),
@@ -86,6 +82,47 @@ class BaConAdapterTests(unittest.TestCase):
             frequencies,
             torch.tensor([200.0, 9.0, 100.0]),
         )
+
+    def test_known_frequency_preserves_hungarian_identity_not_support_rank(self):
+        torch = self.torch
+        np = self.np
+        clusters = np.repeat((0, 1, 2), (40, 90, 10))
+        targets = np.full(clusters.size, -1, dtype=np.int64)
+        labeled = np.zeros(clusters.size, dtype=bool)
+        targets[:30] = 0
+        labeled[:30] = True
+        targets[40:60] = 1
+        labeled[40:60] = True
+
+        loader = [(
+            torch.zeros(len(clusters), 3),
+            torch.from_numpy(targets),
+            torch.arange(len(clusters)),
+            torch.from_numpy(labeled),
+        )]
+
+        class TinyModel:
+            contrastive_backbone = object()
+            def eval(self):
+                return self
+
+        with (
+            patch.object(
+                self.losses, "fit_predict_kmeans",
+                return_value=clusters,
+            ),
+            patch(
+                "prototail_gcd.models.dino_backbone.forward_global_and_patches",
+                return_value=(torch.zeros(len(clusters), 4), None),
+            ),
+        ):
+            estimate = self.losses.estimate_class_frequencies(
+                TinyModel(), loader,
+                num_classes=3, num_known_classes=2,
+                finetune_from_block=0, random_state=0,
+                device=torch.device("cpu"),
+            )
+        torch.testing.assert_close(estimate, torch.tensor([40., 90., 10.]))
 
     def test_optimizer_groups_are_disjoint_and_cover_trainable_parameters(self):
         torch = self.torch

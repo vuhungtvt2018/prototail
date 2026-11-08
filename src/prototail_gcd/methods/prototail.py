@@ -13,7 +13,6 @@ from prototail_gcd.contracts import (
     PredictionOutput,
     TrainingBatch,
 )
-from prototail_gcd.models.dino_backbone import parse_block_index
 
 
 class LatentPartModule(nn.Module):
@@ -67,6 +66,25 @@ class PartPrototypeBank(nn.Module):
 
     def gates(self) -> torch.Tensor:
         return torch.sigmoid(self.gate_logits)
+
+    def target_capacities(self, frequencies: torch.Tensor) -> torch.Tensor:
+        """Paper Appendix B: log-min-max support -> [1, num_slots]."""
+        if frequencies.ndim != 1 or frequencies.numel() != self.num_classes:
+            raise ValueError("frequencies must have one value per class")
+        low, high = frequencies.min(), frequencies.max()
+        if high <= low:
+            # Preserve the current implementation's equal-support fallback.
+            # Paper does not explicitly define this degenerate case.
+            return torch.full_like(frequencies, float(self.num_slots))
+        log_frequencies = torch.log(frequencies + 1e-8)
+        log_low = torch.log(low + 1e-8)
+        log_high = torch.log(high + 1e-8)
+        targets = 1.0 + (
+            float(self.num_slots - 1)
+            * (log_frequencies - log_low)
+            / (log_high - log_low + 1e-8)
+        )
+        return targets.clamp(1.0, float(self.num_slots))
 
     def forward(
         self,
@@ -315,36 +333,24 @@ class ProtoTailPlugin:
         if capacity_weight > 0 and regularize_gates:
             frequencies = context.get("estimated_frequencies")
             if frequencies is None:
-                frequencies = context.get("class_frequencies")
-            if frequencies is None:
                 raise RuntimeError(
                     "ProtoTail capacity regularization requires "
-                    "estimated_frequencies"
+                    "label-free estimated_frequencies; never use GT class_counts"
                 )
             frequencies = torch.as_tensor(
                 frequencies,
                 device=logits.device,
                 dtype=logits.dtype,
             )
-            low, high = frequencies.min(), frequencies.max()
-            if high <= low:
-                target_capacity = torch.full_like(
-                    frequencies,
-                    float(self._components().prototypes.num_slots),
-                )
-            else:
-                log_frequencies = torch.log(frequencies + 1e-8)
-                log_low = torch.log(low + 1e-8)
-                log_high = torch.log(high + 1e-8)
-                target_capacity = 1.0 + (
-                    float(self._components().prototypes.num_slots - 1)
-                    * (log_frequencies - log_low)
-                    / (log_high - log_low + 1e-8)
-                )
-                target_capacity = target_capacity.clamp(
-                    1.0,
-                    float(self._components().prototypes.num_slots),
-                )
+            target_capacity = self._components().prototypes.target_capacities(
+                frequencies
+            )
+            capacity_mode = str(self.config.get("capacity_target_mode", "frequency"))
+            if capacity_mode == "uniform":
+                # Control: same global capacity budget, no class-frequency allocation.
+                target_capacity = target_capacity.mean().expand_as(target_capacity)
+            elif capacity_mode != "frequency":
+                raise ValueError(f"Unsupported capacity_target_mode: {capacity_mode}")
             capacity_loss = F.mse_loss(
                 gates.sum(dim=-1),
                 target_capacity,
@@ -412,38 +418,15 @@ class ProtoTailPlugin:
         model: Any,
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         components = self._components()
-        backbone = getattr(model, "contrastive_backbone", None)
-        if backbone is None:
-            backbone = getattr(model, "backbone", None)
-        if backbone is None:
-            raise ValueError("ProtoTail model does not expose its backbone")
-        finetune_from_block = int(
-            getattr(model, "finetune_from_block", 11)
-        )
-        self._shared_parameters = tuple(
-            parameter
-            for name, parameter in backbone.named_parameters()
-            if parameter.requires_grad
-            and (
-                (block_index := parse_block_index(name)) is not None
-                and block_index >= finetune_from_block
-            )
-        )
+        # The baseline already owns the fine-tunable backbone parameters.
+        # Its gradient includes BOTH baseline and ProtoTail loss terms.
+        self._shared_parameters = ()
         part_groups: list[Mapping[str, Any]] = [
             {
                 "params": list(components.parts.parameters()),
                 "lr": float(self.config.get("learning_rate", 0.05)),
             }
         ]
-        if self._shared_parameters:
-            part_groups.append(
-                {
-                    "params": list(self._shared_parameters),
-                    "lr": float(
-                        self.config.get("shared_backbone_learning_rate", 0.01)
-                    ),
-                }
-            )
         return {
             "part": part_groups,
             "gate": [
@@ -479,9 +462,6 @@ class ProtoTailPlugin:
         if epoch < prototype_start:
             return
         is_simgcd = "student" in output.branches
-        known_end_epoch = self.config.get("known_prototype_end_epoch")
-        if known_end_epoch is not None and epoch > int(known_end_epoch):
-            return
 
         batch_size = int(batch.sample_ids.numel())
         parts = values["parts"][:batch_size].detach()
@@ -495,6 +475,7 @@ class ProtoTailPlugin:
         momentum = float(self.config.get("prototype_momentum", 0.99))
 
         if torch.any(labeled):
+            # Known EMA continues through the end of training (Appendix B).
             bank.update_known(parts[labeled], labels[labeled], momentum)
 
         unlabeled = ~labeled

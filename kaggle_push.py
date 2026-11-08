@@ -18,6 +18,13 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def _get_active_kaggle_username() -> str:
     """Read active Kaggle username from kaggle CLI / credentials."""
@@ -117,9 +124,18 @@ def main():
     )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--eval-interval", "--eval_interval", dest="eval_interval", type=int, default=5)
+    parser.add_argument("--kmeans-backend", choices=["sklearn_cpu", "faiss_gpu"], default="faiss_gpu")
+    parser.add_argument("--kmeans-n-init", type=int, default=10)
+    parser.add_argument("--kmeans-max-iter", type=int, default=300)
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=128)
     parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None)
     parser.add_argument("--dataset-slug", "--dataset_slug", dest="dataset_slug", type=str, default="nguyntrnminhtm/gcd-data")
+    parser.add_argument(
+        "--accelerator",
+        type=str,
+        default="NvidiaTeslaT4",
+        help="Hardware accelerator to request on Kaggle ('NvidiaTeslaT4' allocates Dual NVIDIA T4 GPUs)",
+    )
     parser.add_argument("--dry-run", "--dry_run", dest="dry_run", action="store_true", help="Build kernel locally without pushing")
     args = parser.parse_args()
     name_map = {
@@ -194,6 +210,9 @@ cmd = [
     "--imb-ratio", "{args.imb_ratio}",
     "--epochs", "{args.epochs}",
     "--eval-interval", "{args.eval_interval}",
+    "--kmeans-backend", "{args.kmeans_backend}",
+    "--kmeans-n-init", "{args.kmeans_n_init}",
+    "--kmeans-max-iter", "{args.kmeans_max_iter}",
     "--batch-size", "{args.batch_size}",
     "--run-name", "{exp_name}",
 ]
@@ -220,6 +239,8 @@ sys.exit(process.returncode)
         "enable_gpu": "true",
         "enable_tpu": "false",
         "enable_internet": "true",
+        "accelerator": args.accelerator,
+        "machine_shape": args.accelerator,
         "dataset_sources": [args.dataset_slug],
         "competition_sources": [],
         "kernel_sources": [],
@@ -227,6 +248,7 @@ sys.exit(process.returncode)
     with open(staging_dir / "kernel-metadata.json", "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
+    acc_desc = "2x NVIDIA Tesla T4 (Dual GPU)" if args.accelerator == "NvidiaTeslaT4" else args.accelerator
     print("=" * 65)
     print("        PROTOTAIL KAGGLE CLI PUSH LAUNCHER")
     print("=" * 65)
@@ -237,7 +259,7 @@ sys.exit(process.returncode)
     print(f"Dataset:         {args.dataset_name.upper()} (imb={args.imb_ratio})")
     print(f"Config Ablation: {args.config}")
     print(f"Flags:           {flag_str or '(none - pure baseline)'}")
-    print(f"GPU:             NVIDIA T4 (enable_gpu: true)")
+    print(f"Hardware Acc:    {acc_desc} (--accelerator {args.accelerator})")
     print(f"Code Payload:    {len(b64_bundle)} chars (~{len(b64_bundle)//1024} KB self-extracting)")
     print("=" * 65)
     if args.dry_run:
@@ -246,17 +268,46 @@ sys.exit(process.returncode)
     print("\nPushing kernel to Kaggle...")
     sys.stdout.flush()
 
-    cmd_push = ["kaggle", "kernels", "push", "-p", str(staging_dir)]
-    res = subprocess.run(cmd_push)
+    cmd_push = [
+        "kaggle",
+        "kernels",
+        "push",
+        "-p",
+        str(staging_dir),
+        "--accelerator",
+        args.accelerator,
+    ]
+    res = subprocess.run(cmd_push, capture_output=True, text=True)
+    if res.stdout:
+        print(res.stdout, end="")
+    if res.stderr:
+        print(res.stderr, end="")
+    sys.stdout.flush()
 
-    if res.returncode == 0:
+    stdout_str = res.stdout or ""
+    is_success = (
+        res.returncode == 0
+        and "successfully pushed" in stdout_str.lower()
+        and "kernel push error" not in stdout_str.lower()
+    )
+
+    if is_success:
         print("\n" + "=" * 65)
         print("  >>> THÀNH CÔNG! Kernel đã được đẩy lên Kaggle <<<")
-        print(f"  Mô hình đang được train ngầm trên GPU T4 của account: {kaggle_user}")
+        print(f"  Mô hình đang được train trên {acc_desc} của account: {kaggle_user}")
         print(f"  Kiểm tra trạng thái: kaggle kernels status {kaggle_user}/{kernel_slug}")
         print("=" * 65)
     else:
-        print(f"\n[Error] Push thất bại (code {res.returncode}). Kiểm tra lại kết nối hoặc account.")
+        print("\n" + "=" * 65)
+        print("  [ERROR] Đẩy Kernel lên Kaggle THẤT BÀI!")
+        if "maximum batch gpu session count" in stdout_str.lower():
+            print("  LÝ DO: Đã đạt giới hạn số lượng GPU session chạy đồng thời (tối đa 2 GPU sessions trên Kaggle).")
+            print("  Vì bạn đang dùng 2x T4 (Dual GPU), 1 kernel đã chiếm trọn cả 2 GPU slots của account.")
+            print("  Cách khắc phục:")
+            print("    1. Kiểm tra kernel đang chạy: kaggle kernels status <user>/<running-kernel>")
+            print("    2. Đợi kernel đó chạy xong, hoặc hủy trên Web Kaggle (https://www.kaggle.com)")
+            print("    3. Sau khi GPU được giải phóng, hãy chạy lại lệnh push này.")
+        print("=" * 65)
 
 
 if __name__ == "__main__":

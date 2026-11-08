@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
-from sklearn.cluster import KMeans
 
 from prototail_gcd.contracts import DistributionBatch
+from prototail_gcd.utils.kmeans_backend import fit_predict_kmeans
 
 
 class SemiConLoss(nn.Module):
@@ -57,8 +57,14 @@ def estimate_class_frequencies(
     finetune_from_block: int,
     random_state: int,
     device: torch.device,
+    kmeans_backend: str = "faiss_gpu",
+    kmeans_n_init: int = 10,
+    kmeans_max_iter: int = 300,
 ) -> torch.Tensor:
     from prototail_gcd.models.dino_backbone import forward_global_and_patches
+
+    if kmeans_backend == "faiss_gpu" and device.type == "cpu":
+        kmeans_backend = "sklearn_cpu"
 
     features: list[np.ndarray] = []
     targets: list[np.ndarray] = []
@@ -96,11 +102,14 @@ def estimate_class_frequencies(
     if np.any(all_targets[all_labeled] < 0):
         raise ValueError("labeled targets must be non-negative class IDs")
 
-    assignments = KMeans(
-        n_clusters=num_classes,
-        random_state=random_state,
-        n_init=10,
-    ).fit_predict(all_features)
+    assignments = fit_predict_kmeans(
+        all_features,
+        num_classes,
+        seed=random_state,
+        backend=kmeans_backend,
+        n_init=kmeans_n_init,
+        max_iter=kmeans_max_iter,
+    )
     cluster_counts = np.bincount(assignments, minlength=num_classes)
     contingency = np.zeros((num_classes, num_classes), dtype=np.int64)
     np.add.at(
@@ -127,16 +136,12 @@ def estimate_class_frequencies(
         for class_id in range(num_known_classes)
         if class_id in cluster_for_class
     ]
-    labeled_class_counts = np.bincount(
-        all_targets[all_labeled],
-        minlength=num_known_classes,
-    )[:num_known_classes]
     estimate = np.ones(num_classes, dtype=np.float32)
-    known_by_support = np.argsort(labeled_class_counts)
-    known_cluster_counts = np.sort(cluster_counts[known_cluster_ids])
-    if len(known_by_support) != len(known_cluster_counts):
+    if len(known_cluster_ids) != num_known_classes:
         raise RuntimeError("known-class frequency alignment is incomplete")
-    estimate[known_by_support] = known_cluster_counts
+    for class_id in range(num_known_classes):
+        # Preserve the Hungarian class -> cluster assignment.
+        estimate[class_id] = cluster_counts[cluster_for_class[class_id]]
 
     novel_cluster_ids = sorted(set(range(num_classes)) - set(known_cluster_ids))
     novel_cluster_counts = np.sort(cluster_counts[novel_cluster_ids])[::-1]

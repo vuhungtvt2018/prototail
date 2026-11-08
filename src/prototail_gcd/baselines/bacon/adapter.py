@@ -381,6 +381,9 @@ class BaConAdapter:
             finetune_from_block=model.finetune_from_block,
             random_state=int(config["distribution_cluster_seed"]),
             device=device,
+            kmeans_backend=str(context.get("kmeans_backend", "faiss_gpu")),
+            kmeans_n_init=int(context.get("kmeans_n_init", 10)),
+            kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
         )
         adjustment = distribution_logit_adjustment(
             frequencies,

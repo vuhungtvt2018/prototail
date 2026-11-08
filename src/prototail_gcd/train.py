@@ -12,10 +12,14 @@ if __package__ is None or __package__ == "":
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
+import time
 import numpy as np
 import torch
 import yaml
-from sklearn.cluster import KMeans
+from prototail_gcd.utils.kmeans_backend import (
+    fit_predict_kmeans,
+    require_kmeans_backend,
+)
 
 from prototail_gcd.baselines.registry import build_baseline
 from prototail_gcd.data.cub import CUBLongTailAdapter
@@ -50,7 +54,11 @@ def load_experiment(path: Path) -> dict[str, Any]:
     data_config = config.get("data")
     if not isinstance(data_config, dict):
         raise ValueError("Missing data configuration")
-    valid_names = ("cub", "cub200", "cars", "stanford_cars", "scars", "aircraft", "fgvc_aircraft")
+    valid_names = (
+        "cub", "cub200", "cars", "stanford_cars", "scars",
+        "aircraft", "fgvc_aircraft",
+        "imagenet100_lt", "herbarium19", "inat2018",
+    )
     if data_config.get("name") not in valid_names:
         data_config["name"] = "cub"
     return config
@@ -82,9 +90,15 @@ def evaluate(
     accuracy_scale: float = 1.0,
     empty_metric_value: float | None = None,
     use_fp16: bool = False,
+    kmeans_backend: str = "faiss_gpu",
+    kmeans_n_init: int = 10,
+    kmeans_max_iter: int = 300,
 ) -> dict[str, float | None]:
     if hasattr(model, "eval"):
         model.eval()
+    if kmeans_backend == "faiss_gpu" and device.type == "cpu":
+        kmeans_backend = "sklearn_cpu"
+    t_start = time.perf_counter()
     target_batches: list[np.ndarray] = []
     class_id_batches: list[np.ndarray] = []
     feature_batches: list[np.ndarray] = []
@@ -136,6 +150,7 @@ def evaluate(
                     "Baseline prediction must return class IDs or features"
                 )
 
+    t_features_done = time.perf_counter()
     if not target_batches:
         raise ValueError("Evaluation loader produced no batches")
     targets = np.concatenate(target_batches).reshape(-1)
@@ -145,14 +160,18 @@ def evaluate(
         features = np.concatenate(feature_batches)
         if features.ndim != 2:
             raise ValueError("Clustering features must be a 2-D array")
-        predicted_ids = KMeans(
-            n_clusters=num_classes,
-            random_state=random_state,
-            n_init=10,
-        ).fit_predict(features)
+        predicted_ids = fit_predict_kmeans(
+            features,
+            num_classes,
+            seed=random_state,
+            backend=kmeans_backend,
+            n_init=kmeans_n_init,
+            max_iter=kmeans_max_iter,
+        )
     else:
         raise ValueError("Evaluation loader produced no predictions")
 
+    t_clustering_done = time.perf_counter()
     metrics = clustering_metrics(
         targets=targets,
         predictions=predicted_ids,
@@ -177,6 +196,12 @@ def evaluate(
                 for metric_name, value in diagnostic_metrics.items()
             }
         )
+    print(
+        f"[EVAL_PROFILE] extract_s={t_features_done - t_start:.3f} "
+        f"cluster_s={t_clustering_done - t_features_done:.3f} "
+        f"metrics_s={time.perf_counter() - t_clustering_done:.3f}",
+        flush=True,
+    )
     return metrics
 
 
@@ -244,7 +269,14 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument("--num-workers", type=int, help="Override dataloader num_workers")
     parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True, help="Enable/disable FP16 AMP")
     parser.add_argument("--imb-ratio", "--imb_ratio", dest="imb_ratio", type=int, help="Override imbalance ratio")
-    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cars", "aircraft"], default=None, help="Dataset name: cub, cars, aircraft")
+    parser.add_argument(
+        "--dataset-name",
+        "--dataset_name",
+        dest="dataset_name",
+        choices=["cub", "cars", "aircraft", "imagenet100_lt", "herbarium19", "inat2018"],
+        default=None,
+        help="Dataset name: cub, cars, aircraft, imagenet100_lt, herbarium19, inat2018",
+    )
     parser.add_argument(
         "--simgcd-eval-head",
         choices=["kmeans", "parametric"],
@@ -257,7 +289,33 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
     parser.add_argument("--pseudo-warmup-epochs", "--pseudo_warmup_epochs", dest="pseudo_warmup_epochs", type=int, default=None, help="Override pseudo labeling warmup epochs")
     parser.add_argument("--pseudo-confidence", "--pseudo_confidence", dest="pseudo_confidence", type=float, default=None, help="Override pseudo confidence threshold")
+    parser.add_argument(
+        "--kmeans-backend",
+        choices=["sklearn_cpu", "faiss_gpu"],
+        default=None,
+        help="KMeans backend for clustering eval and distribution estimation (defaults to faiss_gpu when CUDA is available)",
+    )
+    parser.add_argument(
+        "--kmeans-n-init",
+        type=int,
+        default=10,
+        help="Number of KMeans initializations / restarts",
+    )
+    parser.add_argument(
+        "--kmeans-max-iter",
+        type=int,
+        default=300,
+        help="Maximum KMeans iterations",
+    )
     arguments, _ = parser.parse_known_args()
+    if arguments.kmeans_backend is None:
+        target_device = torch.device(
+            arguments.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        arguments.kmeans_backend = "faiss_gpu" if target_device.type == "cuda" else "sklearn_cpu"
+    require_kmeans_backend(arguments.kmeans_backend)  # Fail before training
+    if arguments.kmeans_n_init <= 0 or arguments.kmeans_max_iter <= 0:
+        parser.error("KMeans restart count and max iteration must be positive")
 
     config = load_experiment(arguments.config)
     if arguments.run_name:
@@ -344,8 +402,18 @@ def main(allowed_baseline: str | None = None) -> None:
         config["data"]["protocol"]["known_class_count"] = 98
     elif dataset_name in ("aircraft", "fgvc_aircraft"):
         config["data"]["protocol"]["known_class_count"] = 80
+    elif dataset_name == "imagenet100_lt":
+        config["data"]["protocol"]["known_class_count"] = 50
+    elif dataset_name == "herbarium19":
+        config["data"]["protocol"]["known_class_count"] = 341
+    elif dataset_name == "inat2018":
+        config["data"]["protocol"]["known_class_count"] = 4071
 
-    if arguments.imb_ratio is not None:
+    if dataset_name in ("herbarium19", "inat2018"):
+        if arguments.imb_ratio is not None:
+            raise ValueError("Natural-LT datasets do not accept --imb-ratio")
+        config["data"]["protocol"]["imbalance_ratio"] = "natural"
+    elif arguments.imb_ratio is not None:
         config["data"]["protocol"]["imbalance_ratio"] = int(arguments.imb_ratio)
     else:
         config["data"]["protocol"].setdefault("imbalance_ratio", 20)
@@ -432,9 +500,8 @@ def main(allowed_baseline: str | None = None) -> None:
     context["num_known_classes"] = len(dataset.known_class_ids)
     if hasattr(dataset, "class_counts") and dataset.class_counts is not None:
         context["class_counts"] = dataset.class_counts
-        context["class_frequencies"] = torch.as_tensor(
-            dataset.class_counts, dtype=torch.float32, device=device
-        )
+        # For reporting shot metrics ONLY. Never provide full GT counts to
+        # training losses: the novel labels are hidden in the GCD protocol.
     context["total_epochs"] = epoch_count
     context["use_logit_adjust"] = bool(
         baseline_config.get("use_logit_adjust", False)
@@ -445,6 +512,21 @@ def main(allowed_baseline: str | None = None) -> None:
     context["enable_novel_pseudo"] = bool(
         baseline_config.get("enable_novel_pseudo", False)
     )
+    context["kmeans_backend"] = arguments.kmeans_backend
+    context["kmeans_n_init"] = arguments.kmeans_n_init
+    context["kmeans_max_iter"] = arguments.kmeans_max_iter
+    context["needs_frequency_estimate"] = (
+        baseline_name == "bacon"
+        or (
+            method_enabled
+            and float(method_settings.get("capacity_regularization_weight", 0)) > 0
+        )
+    )
+    config["kmeans_runtime"] = {
+        "backend": arguments.kmeans_backend,
+        "n_init": arguments.kmeans_n_init,
+        "max_iter": arguments.kmeans_max_iter,
+    }
 
     # Determine explicit ablation configuration name
     if not method_enabled and not enable_pseudo:
@@ -462,11 +544,20 @@ def main(allowed_baseline: str | None = None) -> None:
     else:
         detected_config = "Custom"
 
+    if torch.cuda.is_available():
+        gpu_cnt = torch.cuda.device_count()
+        gpu_names = [torch.cuda.get_device_name(i) for i in range(gpu_cnt)]
+        device_summary = f"{device} ({gpu_cnt}x GPU: {', '.join(gpu_names)})"
+    else:
+        device_summary = str(device)
+
     print("\n" + "=" * 68)
     print("           PROTOTAIL GCD TRAINING CONFIGURATION")
     print("=" * 68)
     print(f"Run Name:                 {config['experiment']['name']}")
     print(f"Ablation Setting:         {detected_config}")
+    print(f"Hardware / Device:        {device_summary}")
+    print(f"KMeans Eval Backend:      {arguments.kmeans_backend} (n_init={arguments.kmeans_n_init}, max_iter={arguments.kmeans_max_iter})")
     print(f"Baseline Architecture:    {baseline_name.upper()}")
     print(f"Dataset / Split:          {dataset_name} (imb_ratio={config['data']['protocol'].get('imbalance_ratio', 'N/A')}, known={len(dataset.known_class_ids)}, total={dataset.num_classes})")
     print(f"Total Epochs / Workers:   {epoch_count} epochs / {optimization.get('num_workers', 2)} workers")
@@ -493,6 +584,9 @@ def main(allowed_baseline: str | None = None) -> None:
     output_directory = Path(config["experiment"]["output_dir"])
     output_directory.mkdir(parents=True, exist_ok=True)
     experiment_name = str(config["experiment"]["name"])
+    tail_debug_path = output_directory / f"{experiment_name}.tail_debug.jsonl"
+    if method is not None:
+        tail_debug_path.write_text("", encoding="utf-8")
     checkpoint_path = output_directory / f"{experiment_name}.pt"
     best_checkpoint_path = output_directory / f"{experiment_name}.best.pt"
     metrics_path = output_directory / f"{experiment_name}.metrics.jsonl"
@@ -539,6 +633,9 @@ def main(allowed_baseline: str | None = None) -> None:
                     accuracy_scale=accuracy_scale,
                     empty_metric_value=empty_metric_val,
                     use_fp16=use_fp16_flag,
+                    kmeans_backend=arguments.kmeans_backend,
+                    kmeans_n_init=arguments.kmeans_n_init,
+                    kmeans_max_iter=arguments.kmeans_max_iter,
                 )
                 record["test"] = evaluate(
                     model,
@@ -553,6 +650,9 @@ def main(allowed_baseline: str | None = None) -> None:
                     accuracy_scale=accuracy_scale,
                     empty_metric_value=empty_metric_val,
                     use_fp16=use_fp16_flag,
+                    kmeans_backend=arguments.kmeans_backend,
+                    kmeans_n_init=arguments.kmeans_n_init,
+                    kmeans_max_iter=arguments.kmeans_max_iter,
                 )
             serialized_record = json.dumps(record, sort_keys=True, allow_nan=False)
             print(serialized_record, flush=True)
@@ -598,7 +698,8 @@ def main(allowed_baseline: str | None = None) -> None:
             if method is not None and ((epoch + 1) % 10 == 0 or is_last_epoch):
                 try:
                     with torch.no_grad():
-                        gates = method._components().prototypes.gates()
+                        bank = method._components().prototypes
+                        gates = bank.gates()
                         mean_g = float(gates.mean().item())
                         max_g = float(gates.max().item())
                         frac_o = float((gates > 0.5).float().mean().item())
@@ -607,8 +708,33 @@ def main(allowed_baseline: str | None = None) -> None:
                         u_slots = float(gates[known_class_count:].sum(dim=-1).mean().item()) if gates.shape[0] > known_class_count else 0.0
                         print(f"[PROTOTYPE CAMERA] Epoch {epoch + 1}: Gate mean={mean_g:.3f} max={max_g:.3f} frac_open(>0.5)={frac_o:.1%} active_slots_per_class~={active_s:.2f}", flush=True)
                         print(f"  Active Slots/Class: Known ~ {k_slots:.2f} | Novel ~ {u_slots:.2f}", flush=True)
-                except Exception:
-                    pass
+                        data = {
+                            "epoch": epoch + 1,
+                            "num_known_classes": known_class_count,
+                            "gate_logits": bank.gate_logits.detach().cpu().tolist(),
+                            "gate_values": gates.detach().cpu().tolist(),
+                            "actual_kappa": gates.sum(-1).detach().cpu().tolist(),
+                        }
+                        grad = bank.gate_logits.grad
+                        data["gate_grad_l2_last_batch"] = (
+                            float(grad.detach().norm().item())
+                            if grad is not None else None
+                        )
+                        estimated = engine.context.get("estimated_frequencies")
+                        if estimated is not None:
+                            frequencies = torch.as_tensor(
+                                estimated, dtype=gates.dtype, device=gates.device
+                            )
+                            desired = bank.target_capacities(frequencies)
+                            data["estimated_frequencies"] = frequencies.cpu().tolist()
+                            data["target_kappa"] = desired.cpu().tolist()
+                            data["capacity_mae"] = float(
+                                (gates.sum(-1) - desired).abs().mean().item()
+                            )
+                        with tail_debug_path.open("a", encoding="utf-8") as stream:
+                            stream.write(json.dumps(data, allow_nan=False) + "\n")
+                except Exception as error:
+                    raise RuntimeError("ProtoTail tail diagnostics failed") from error
             torch.save(
                 {
                     "model": model.state_dict(),

@@ -52,14 +52,6 @@ class TrainingEngine:
 
     def _validate_disjoint_optimizers(self) -> None:
         seen_parameter_ids: set[int] = set()
-        shared_method_parameter_ids = (
-            {
-                id(parameter)
-                for parameter in self.method.shared_parameters()
-            }
-            if self.method is not None
-            else set()
-        )
         for optimizer_name, optimizer in self.optimizers.items():
             current_ids = {
                 id(parameter)
@@ -67,14 +59,7 @@ class TrainingEngine:
                 for parameter in group["params"]
             }
             overlap = seen_parameter_ids & current_ids
-            is_method_part_optimizer = (
-                self.method is not None
-                and optimizer_name == f"{self.method.name}_part"
-            )
-            if overlap and not (
-                is_method_part_optimizer
-                and overlap <= shared_method_parameter_ids
-            ):
+            if overlap:
                 raise ValueError(
                     f"optimizer {optimizer_name!r} shares parameters with "
                     "another optimizer"

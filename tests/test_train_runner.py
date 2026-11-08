@@ -144,9 +144,11 @@ class UnifiedRunnerTests(unittest.TestCase):
         self.assertEqual(metrics["old"], 100.0)
         self.assertEqual(metrics["new"], 100.0)
         self.assertEqual(metrics["k_many"], -1.0)
-        self.assertEqual(metrics["k_few"], -1.0)
+        self.assertEqual(metrics["k_med"], -1.0)
         self.assertEqual(metrics["u_many"], -1.0)
-        self.assertEqual(metrics["u_few"], -1.0)
+        self.assertEqual(metrics["u_med"], -1.0)
+        self.assertEqual(metrics["k_few"], 100.0)
+        self.assertEqual(metrics["u_few"], 100.0)
         self.assertEqual(metrics["nmi"], 1.0)
 
 

@@ -33,6 +33,42 @@ from datetime import datetime
 from pathlib import Path
 
 
+def _setup_kmeans_backend(requested_backend: str) -> str:
+    """Ensure requested KMeans backend is functional on Kaggle GPU.
+    
+    If faiss_gpu is requested, attempts to install faiss-gpu-cu12 or faiss-gpu if missing.
+    If unavailable, falls back to sklearn_cpu to guarantee zero-crash execution.
+    """
+    if requested_backend != "faiss_gpu":
+        return requested_backend
+
+    try:
+        import faiss
+        if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
+            print(f"[Kaggle Setup] faiss-gpu is ready ({faiss.get_num_gpus()} GPU(s) active for parallel clustering).")
+            return "faiss_gpu"
+    except Exception:
+        pass
+
+    print("[Kaggle Setup] faiss-gpu not found. Installing faiss-gpu for accelerated clustering...")
+    for pkg in ("faiss-gpu-cu12", "faiss-gpu"):
+        try:
+            res = subprocess.run(
+                [sys.executable, "-m", "pip", "install", pkg, "-q"],
+                check=False,
+            )
+            if res.returncode == 0:
+                import faiss
+                if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
+                    print(f"[Kaggle Setup] Successfully installed {pkg} with GPU support!")
+                    return "faiss_gpu"
+        except Exception as exc:
+            print(f"[Kaggle Setup] Attempt {pkg} failed: {exc}")
+
+    print("[Kaggle Setup] Warning: faiss-gpu could not be installed. Falling back to sklearn_cpu to guarantee completion.")
+    return "sklearn_cpu"
+
+
 def _extract_archive_if_needed(archive_path: Path, target_dir: Path) -> Path:
     """Extract .tar.gz, .tgz, or .zip archive to target_dir if not already extracted."""
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -211,7 +247,7 @@ def _get_kaggle_account(cli_override: str | None = None) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="ProtoTail Kaggle 1x T4 Training Runner",
+        description="ProtoTail Kaggle 2x T4 Dual-GPU Training Runner",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -256,6 +292,14 @@ def main() -> None:
         default=5,
         help="Evaluation epoch interval (every N epochs). Saves ~2h of KMeans clustering.",
     )
+    parser.add_argument(
+        "--kmeans-backend",
+        choices=["sklearn_cpu", "faiss_gpu"],
+        default="faiss_gpu",
+        help="KMeans backend for clustering eval and distribution estimation",
+    )
+    parser.add_argument("--kmeans-n-init", type=int, default=10)
+    parser.add_argument("--kmeans-max-iter", type=int, default=300)
     parser.add_argument(
         "--num-workers",
         type=int,
@@ -375,8 +419,21 @@ def main() -> None:
     else:
         detected_config = "Custom"
 
+    try:
+        import torch
+
+        cuda_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if cuda_count > 1:
+            dev_desc = f"{cuda_count}x GPUs ({torch.cuda.get_device_name(0)}, etc.) [Training: cuda:0 | Clustering: {cuda_count}x GPUs parallel]"
+        elif cuda_count == 1:
+            dev_desc = f"1x GPU ({torch.cuda.get_device_name(0)})"
+        else:
+            dev_desc = "CPU"
+    except Exception:
+        dev_desc = args.device
+
     print("=" * 65)
-    print("        PROTOTAIL KAGGLE 1x T4 TRAINING RUNNER")
+    print("        PROTOTAIL KAGGLE DUAL-GPU TRAINING RUNNER")
     print("=" * 65)
     print(f"Kaggle Account:   {kaggle_account}")
     print(f"Ablation Setting: {detected_config}")
@@ -385,7 +442,7 @@ def main() -> None:
     print(f"Method Plugin:    {'ProtoTail (Enabled)' if args.enable_prototail else 'Pure Baseline'}")
     print(f"Tail-aware Reg:   {'ACTIVE (0.05)' if (args.use_parts and not args.ablate_adaptive_capacity) else 'DISABLED (0.0)'}")
     print(f"Pseudo-labeling:  {'ACTIVE (D1+D2)' if (args.enable_pseudo_labeling and args.enable_novel_pseudo) else ('ACTIVE (D1)' if args.enable_pseudo_labeling else 'DISABLED')}")
-    print(f"Device:           {args.device} (1x T4 GPU)")
+    print(f"Hardware/Device:  {dev_desc}")
     print(f"Epochs:           {args.epochs}")
     print(f"Batch Size:       {args.batch_size}")
     print(f"Mixed Precision:  {'FP16 (Enabled, Tensor Cores Active)' if args.fp16 else 'FP32'}")
@@ -399,6 +456,7 @@ def main() -> None:
 
     # Build execution command for train.py
     train_script = repo_root / "src/prototail_gcd/train.py"
+    active_kmeans_backend = _setup_kmeans_backend(args.kmeans_backend)
     cmd = [
         sys.executable,
         str(train_script),
@@ -422,6 +480,12 @@ def main() -> None:
         str(args.batch_size),
         "--eval-interval",
         str(args.eval_interval),
+        "--kmeans-backend",
+        active_kmeans_backend,
+        "--kmeans-n-init",
+        str(args.kmeans_n_init),
+        "--kmeans-max-iter",
+        str(args.kmeans_max_iter),
         "--num-workers",
         str(args.num_workers),
         "--seed",

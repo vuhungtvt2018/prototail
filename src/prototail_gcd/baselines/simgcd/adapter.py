@@ -200,15 +200,15 @@ class SimGCDAdapter:
         context: Mapping[str, Any],
         config: Mapping[str, Any],
     ) -> Mapping[str, Any] | None:
+        # SimGCD only needs this estimator if Tail-aware capacity is active.
+        if not bool(context.get("needs_frequency_estimate", True)):
+            return None
         interval = int(config.get("distribution_estimate_interval", 10))
         if epoch != 0 and epoch % interval:
             return None
         loader = context.get("distribution_loader")
         if loader is None:
-            freq = context.get("class_frequencies")
-            if freq is not None:
-                return {"estimated_frequencies": freq}
-            return None
+            raise RuntimeError("Tail-aware requires a distribution_loader")
         device = next(model.backbone.parameters()).device
         from prototail_gcd.baselines.bacon.losses import estimate_class_frequencies
         try:
@@ -220,14 +220,13 @@ class SimGCDAdapter:
                 finetune_from_block=model.finetune_from_block,
                 random_state=int(config.get("distribution_cluster_seed", 0)),
                 device=device,
+                kmeans_backend=str(context.get("kmeans_backend", "faiss_gpu")),
+                kmeans_n_init=int(context.get("kmeans_n_init", 10)),
+                kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
             )
+        finally:
             model.train()
-            return {"estimated_frequencies": frequencies}
-        except Exception:
-            freq = context.get("class_frequencies")
-            if freq is not None:
-                return {"estimated_frequencies": freq}
-            return None
+        return {"estimated_frequencies": frequencies}
 
     def after_optimizer_step(
         self,

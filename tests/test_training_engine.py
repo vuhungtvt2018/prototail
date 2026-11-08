@@ -64,6 +64,23 @@ class TrainingEngineTests(unittest.TestCase):
         self.assertIn("total", losses)
         self.assertFalse(torch.equal(before, model.weight.detach()))
 
+    def test_disjoint_optimizers_raises_on_shared_parameters(self):
+        torch = self.torch
+        param = torch.nn.Parameter(torch.zeros(2))
+        opt1 = torch.optim.SGD([param], lr=0.1)
+        opt2 = torch.optim.SGD([param], lr=0.01)
+
+        class DummyBaseline:
+            pass
+
+        with self.assertRaisesRegex(ValueError, "shares parameters with another optimizer"):
+            self.engine_module.TrainingEngine(
+                model=torch.nn.Linear(2, 2),
+                baseline=DummyBaseline(),
+                optimizers={"main": opt1, "part": opt2},
+                baseline_config={},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

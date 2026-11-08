@@ -103,24 +103,13 @@ def _add_shot_metrics(
     known_ids = class_ids[class_ids < known_class_count]
     novel_ids = class_ids[class_ids >= known_class_count]
     for prefix, ids in (("k", known_ids), ("u", novel_ids)):
-        if not ids.size:
-            many_threshold = few_threshold = 0
-        elif known_class_count == 5:
-            sorted_counts = np.sort(class_counts[ids])[::-1]
-            many_threshold = sorted_counts[1]
-            few_threshold = sorted_counts[2]
-        else:
-            sorted_counts = np.sort(class_counts[ids])[::-1]
-            many_threshold = sorted_counts[len(ids) // 3]
-            few_threshold = sorted_counts[(2 * len(ids)) // 3]
-        per_class_counts = class_counts[ids]
+        # Sort by descending support; stable class-ID tie-break is essential.
+        ordered = ids[np.lexsort((ids, -class_counts[ids]))]
+        cut1, cut2 = len(ordered) // 3, (2 * len(ordered)) // 3
         groups = {
-            "many": ids[per_class_counts > many_threshold],
-            "med": ids[
-                (per_class_counts <= many_threshold)
-                & (per_class_counts >= few_threshold)
-            ],
-            "few": ids[per_class_counts < few_threshold],
+            "many": ordered[:cut1],
+            "med": ordered[cut1:cut2],
+            "few": ordered[cut2:],
         }
         for group_name, group_ids in groups.items():
             group_mask = np.isin(targets, group_ids)

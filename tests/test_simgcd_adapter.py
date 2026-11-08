@@ -276,6 +276,66 @@ class SimGCDAdapterTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(logits.grad)
 
+    def test_before_epoch_raises_and_never_falls_back_to_oracle_frequencies(self):
+        from unittest.mock import patch
+        torch = self.torch
+        adapter = self.adapter_module.SimGCDAdapter()
+
+        class DummyBackbone(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.param = torch.nn.Parameter(torch.zeros(1))
+
+        class DummyModel:
+            backbone = DummyBackbone()
+            finetune_from_block = 11
+
+            def train(self):
+                pass
+
+        model = DummyModel()
+
+        # Case 1: missing distribution_loader raises RuntimeError even if class_frequencies present
+        context = {
+            "class_frequencies": torch.tensor([10.0, 5.0]),
+            "num_classes": 2,
+            "num_known_classes": 1,
+        }
+        with self.assertRaisesRegex(RuntimeError, "distribution_loader"):
+            adapter.before_epoch(model, 0, context, {})
+
+        # Case 2: estimator failure raises instead of falling back to class_frequencies
+        context["distribution_loader"] = object()
+        with patch(
+            "prototail_gcd.baselines.bacon.losses.estimate_class_frequencies",
+            side_effect=RuntimeError("estimator failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "estimator failed"):
+                adapter.before_epoch(model, 0, context, {})
+
+    def test_no_frequency_estimation_when_tail_capacity_is_disabled(self):
+        adapter = self.adapter_module.SimGCDAdapter()
+        result = adapter.before_epoch(
+            model=None,
+            epoch=0,
+            context={"needs_frequency_estimate": False},
+            config={},
+        )
+        self.assertIsNone(result)
+
+    def test_missing_distribution_loader_fails_instead_of_using_oracle(self):
+        adapter = self.adapter_module.SimGCDAdapter()
+        with self.assertRaisesRegex(RuntimeError, "distribution_loader"):
+            adapter.before_epoch(
+                model=None,
+                epoch=0,
+                context={
+                    "needs_frequency_estimate": True,
+                    "class_frequencies": self.torch.ones(3),
+                },
+                config={},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
