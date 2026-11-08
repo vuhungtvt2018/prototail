@@ -50,21 +50,28 @@ class PaperDualSelector:
         novel_epochs: tuple[int, ...] = (50, 60, 70, 80, 90, 100),
         seed: int = 0,
         class_temperature: float = 0.1,
+        anti_collapse: bool = True,
+        allow_extended_schedule: bool = True,
     ) -> None:
         if not (0 < n_known < n_classes):
             raise ValueError("Selector requires both known and novel classes")
         if len(set(known_epochs)) != len(known_epochs) or len(known_epochs) > 20:
             raise ValueError("Known selection permits at most 20 distinct rounds")
-        if len(set(novel_epochs)) != len(novel_epochs) or len(novel_epochs) > 6:
-            raise ValueError("Novel selection permits at most 6 distinct rounds")
-        if any(epoch < 50 or epoch > 100 for epoch in novel_epochs):
-            raise ValueError("Paper novel selection occurs only at epochs 50..100")
+        if not allow_extended_schedule:
+            if len(set(novel_epochs)) != len(novel_epochs) or len(novel_epochs) > 6:
+                raise ValueError("Novel selection permits at most 6 distinct rounds")
+            if any(epoch < 50 or epoch > 100 for epoch in novel_epochs):
+                raise ValueError("Paper novel selection occurs only at epochs 50..100")
+        else:
+            if any(epoch < 50 for epoch in novel_epochs):
+                raise ValueError("Novel selection must start at or after epoch 50")
         self.n_known = n_known
         self.n_classes = n_classes
         self.known_epochs = frozenset(known_epochs)
         self.novel_epochs = frozenset(novel_epochs)
         self.seed = seed
         self.class_temperature = class_temperature
+        self.anti_collapse = anti_collapse
         self.previous_accepted_dbi: float | None = None
         self.executed_known: set[int] = set()
         self.executed_novel: set[int] = set()
@@ -240,38 +247,110 @@ class PaperDualSelector:
         accepted_total, accepted_clusters = 0, 0
         predictions = probs.argmax(axis=1)
         existing = store.export_state()
-        for cluster in range(k):
-            if cluster in known_clusters or size_a[cluster] < 10:
-                continue
-            if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette:
-                continue
-            members = np.flatnonzero((labels_a == cluster) & unlabeled)
-            member_predictions = predictions[members]
-            novel_preds = member_predictions[member_predictions >= self.n_known]
-            if len(novel_preds) == 0:
-                continue
-            majority_count = np.bincount(novel_preds, minlength=k)
-            novel_id = int(np.argmax(majority_count))
-            agreement = float(majority_count[novel_id] / len(members))
-            if agreement < 0.7:
-                continue
-            prior_ids = {int(sample_id) for sample_id, old_class in existing.items() if old_class == novel_id}
-            if prior_ids:
-                member_ids = {int(ids[idx]) for idx in members}
-                overlap = len(prior_ids & member_ids) / len(prior_ids | member_ids)
-                if overlap < 0.3:
+
+        if not self.anti_collapse:
+            for cluster in range(k):
+                if cluster in known_clusters or size_a[cluster] < 10:
                     continue
-            remaining = np.asarray([i for i in members if int(ids[i]) not in existing], dtype=np.int64)
-            if len(remaining) == 0:
-                continue
-            # Rank by probability assigned to the accepted majority output.
-            best = remaining[np.argsort(-probs[remaining, novel_id], kind="stable")][:200]
-            pairs = [(int(ids[i]), novel_id) for i in best]
-            accepted_now = store.add_accepted(pairs)
-            if accepted_now:
-                accepted_clusters += 1
-                accepted_total += accepted_now
-                existing.update(dict(pairs))
+                if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette:
+                    continue
+                members = np.flatnonzero((labels_a == cluster) & unlabeled)
+                member_predictions = predictions[members]
+                novel_preds = member_predictions[member_predictions >= self.n_known]
+                if len(novel_preds) == 0:
+                    continue
+                majority_count = np.bincount(novel_preds, minlength=k)
+                novel_id = int(np.argmax(majority_count))
+                agreement = float(majority_count[novel_id] / len(members))
+                if agreement < 0.7:
+                    continue
+                prior_ids = {int(sample_id) for sample_id, old_class in existing.items() if old_class == novel_id}
+                if prior_ids:
+                    member_ids = {int(ids[idx]) for idx in members}
+                    overlap = len(prior_ids & member_ids) / len(prior_ids | member_ids)
+                    if overlap < 0.3:
+                        continue
+                remaining = np.asarray([i for i in members if int(ids[i]) not in existing], dtype=np.int64)
+                if len(remaining) == 0:
+                    continue
+                # Rank by probability assigned to the accepted majority output.
+                best = remaining[np.argsort(-probs[remaining, novel_id], kind="stable")][:200]
+                pairs = [(int(ids[i]), novel_id) for i in best]
+                accepted_now = store.add_accepted(pairs)
+                if accepted_now:
+                    accepted_clusters += 1
+                    accepted_total += accepted_now
+                    existing.update(dict(pairs))
+        else:
+            # Anti-collapse Bipartite Hungarian matching for novel clusters
+            candidate_clusters = []
+            for cluster in range(k):
+                if cluster in known_clusters or size_a[cluster] < 10:
+                    continue
+                if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette:
+                    continue
+                members = np.flatnonzero((labels_a == cluster) & unlabeled)
+                if len(members) == 0:
+                    continue
+                candidate_clusters.append((cluster, members))
+
+            assigned_novel_classes = set(existing.values())
+            resolved_clusters = set()
+            used_novel_classes = set(c for c in assigned_novel_classes if c >= self.n_known)
+
+            # Match persistent clusters to previously assigned novel classes via overlap >= 0.3
+            for cluster, members in candidate_clusters:
+                member_ids_set = {int(ids[idx]) for idx in members}
+                matched_novel_id = None
+                for old_class in used_novel_classes:
+                    prior_ids = {int(s_id) for s_id, c in existing.items() if c == old_class}
+                    if prior_ids:
+                        overlap = len(prior_ids & member_ids_set) / len(prior_ids | member_ids_set)
+                        if overlap >= 0.3:
+                            matched_novel_id = old_class
+                            break
+                if matched_novel_id is not None:
+                    remaining = np.asarray([i for i in members if int(ids[i]) not in existing], dtype=np.int64)
+                    if len(remaining) > 0:
+                        best = remaining[np.argsort(-probs[remaining, matched_novel_id], kind="stable")][:200]
+                        pairs = [(int(ids[i]), matched_novel_id) for i in best]
+                        accepted_now = store.add_accepted(pairs)
+                        if accepted_now:
+                            accepted_clusters += 1
+                            accepted_total += accepted_now
+                            existing.update(dict(pairs))
+                    resolved_clusters.add(cluster)
+
+            # For newly formed clusters, use Hungarian 1-to-1 matching to available novel classes
+            unmatched_clusters = [(c, mem) for c, mem in candidate_clusters if c not in resolved_clusters]
+            available_novel_classes = [c for c in range(self.n_known, k) if c not in used_novel_classes]
+
+            if unmatched_clusters and available_novel_classes:
+                num_c = len(unmatched_clusters)
+                num_a = len(available_novel_classes)
+                affinity_matrix = np.zeros((num_c, num_a), dtype=np.float64)
+                for i, (_, mem) in enumerate(unmatched_clusters):
+                    cluster_probs = probs[mem]
+                    for j, nc in enumerate(available_novel_classes):
+                        affinity_matrix[i, j] = float(cluster_probs[:, nc].mean())
+
+                row_ind, col_ind = linear_sum_assignment(-affinity_matrix)
+                for r, c_idx in zip(row_ind, col_ind):
+                    cluster, members = unmatched_clusters[r]
+                    novel_id = available_novel_classes[c_idx]
+                    if affinity_matrix[r, c_idx] < 1e-5:
+                        continue
+                    remaining = np.asarray([i for i in members if int(ids[i]) not in existing], dtype=np.int64)
+                    if len(remaining) == 0:
+                        continue
+                    best = remaining[np.argsort(-probs[remaining, novel_id], kind="stable")][:200]
+                    pairs = [(int(ids[i]), novel_id) for i in best]
+                    accepted_now = store.add_accepted(pairs)
+                    if accepted_now:
+                        accepted_clusters += 1
+                        accepted_total += accepted_now
+                        existing.update(dict(pairs))
+                        used_novel_classes.add(novel_id)
         if accepted_total:
             self.previous_accepted_dbi = dbi
         return {"accepted": accepted_total, "clusters": accepted_clusters, "dbi": dbi}

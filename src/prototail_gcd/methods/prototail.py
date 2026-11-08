@@ -541,7 +541,7 @@ class ProtoTailPlugin:
         known_class_count = int(context["num_known_classes"])
         if not 0 <= known_class_count <= class_count:
             raise ValueError("Invalid known class count for ProtoTail")
-        if epoch > int(self.config.get("novel_prototype_end_epoch", 60)):
+        if epoch > int(self.config.get("novel_prototype_end_epoch", 180)):
             return
         pseudo_label_logits = logits
         if not is_simgcd:
@@ -555,11 +555,14 @@ class ProtoTailPlugin:
         ).softmax(dim=-1)
         confidence, pseudo_labels = probabilities.max(dim=-1)
         if torch.any(unlabeled):
+            conf_thresh = float(self.config.get("pseudo_confidence", 0.7))
+            if bool(self.config.get("adaptive_pseudo_threshold", False)):
+                conf_thresh = float(self.config.get("pseudo_confidence_min", 0.5))
             bank.update_novel(
                 parts[unlabeled],
                 pseudo_labels[unlabeled],
                 confidence[unlabeled],
-                threshold=float(self.config.get("pseudo_confidence", 0.7)),
+                threshold=conf_thresh,
                 momentum=momentum,
             )
 

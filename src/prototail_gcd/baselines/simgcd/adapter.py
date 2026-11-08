@@ -380,8 +380,26 @@ def compute_simgcd_losses(
     if enable_pseudo and epoch >= pseudo_warmup and unlabeled_mask.any() and num_views >= 2:
         student_temp = float(config["student_temp"])
         pseudo_temp = float(config.get("pseudo_temp", student_temp))
-        threshold = float(config.get("pseudo_confidence", 0.7))
+        threshold_base = float(config.get("pseudo_confidence", 0.7))
+        threshold_min = float(config.get("pseudo_confidence_min", 0.5))
+        adaptive_threshold = bool(
+            config.get("adaptive_pseudo_threshold", False)
+            or context.get("adaptive_pseudo_threshold", False)
+        )
         known_class_count = int(context.get("num_known_classes", 100))
+        class_count = logits.shape[-1]
+
+        if adaptive_threshold:
+            frequencies = context.get("estimated_frequencies")
+            if frequencies is not None:
+                freq_tensor = torch.as_tensor(frequencies, device=logits.device, dtype=torch.float32)
+                freq_norm = freq_tensor / freq_tensor.max().clamp_min(1e-6)
+                class_thresholds = threshold_min + (threshold_base - threshold_min) * torch.sqrt(freq_norm)
+            else:
+                class_thresholds = torch.full((class_count,), threshold_base, device=logits.device)
+                class_thresholds[known_class_count:] = threshold_min
+        else:
+            class_thresholds = torch.full((class_count,), threshold_base, device=logits.device)
 
         u_logits_v0 = logits_by_view[0][unlabeled_mask]
         u_logits_v1 = logits_by_view[1][unlabeled_mask]
@@ -389,9 +407,10 @@ def compute_simgcd_losses(
         with torch.no_grad():
             probs_v0 = F.softmax(u_logits_v0 / pseudo_temp, dim=-1)
             conf_v0, pred_v0 = probs_v0.max(dim=-1)
-            mask_v0_known = (pred_v0 < known_class_count) & (conf_v0 >= threshold)
+            thresh_v0 = class_thresholds[pred_v0]
+            mask_v0_known = (pred_v0 < known_class_count) & (conf_v0 >= thresh_v0)
             mask_v0_novel = (
-                (pred_v0 >= known_class_count) & (conf_v0 >= threshold)
+                (pred_v0 >= known_class_count) & (conf_v0 >= thresh_v0)
                 if enable_novel
                 else torch.zeros_like(mask_v0_known)
             )
@@ -399,9 +418,10 @@ def compute_simgcd_losses(
 
             probs_v1 = F.softmax(u_logits_v1 / pseudo_temp, dim=-1)
             conf_v1, pred_v1 = probs_v1.max(dim=-1)
-            mask_v1_known = (pred_v1 < known_class_count) & (conf_v1 >= threshold)
+            thresh_v1 = class_thresholds[pred_v1]
+            mask_v1_known = (pred_v1 < known_class_count) & (conf_v1 >= thresh_v1)
             mask_v1_novel = (
-                (pred_v1 >= known_class_count) & (conf_v1 >= threshold)
+                (pred_v1 >= known_class_count) & (conf_v1 >= thresh_v1)
                 if enable_novel
                 else torch.zeros_like(mask_v1_known)
             )

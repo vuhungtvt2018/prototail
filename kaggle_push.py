@@ -164,6 +164,30 @@ def main():
         default="auto",
     )
     parser.add_argument(
+        "--novel-prototype-end-epoch",
+        type=int,
+        default=180,
+        help="Epoch cutoff for updating novel prototypes (default: 180)",
+    )
+    parser.add_argument(
+        "--anti-collapse-novel-selector",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable Hungarian bipartite 1-to-1 matching for D2 novel clusters",
+    )
+    parser.add_argument(
+        "--adaptive-pseudo-threshold",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable class-adaptive confidence thresholding for long-tail self-training",
+    )
+    parser.add_argument(
+        "--pseudo-confidence-min",
+        type=float,
+        default=0.5,
+        help="Minimum confidence threshold for tail classes under adaptive thresholding",
+    )
+    parser.add_argument(
         "--require-paper-dual-selection",
         action="store_true",
         default=False,
@@ -208,6 +232,18 @@ def main():
         flags.extend(["--novel-frequency-mapping", args.novel_frequency_mapping])
     if args.require_paper_dual_selection:
         flags.append("--require-paper-dual-selection")
+    if getattr(args, "novel_prototype_end_epoch", None) is not None:
+        flags.extend(["--novel-prototype-end-epoch", str(args.novel_prototype_end_epoch)])
+    if getattr(args, "anti_collapse_novel_selector", True):
+        flags.append("--anti-collapse-novel-selector")
+    else:
+        flags.append("--no-anti-collapse-novel-selector")
+    if getattr(args, "adaptive_pseudo_threshold", True):
+        flags.append("--adaptive-pseudo-threshold")
+    else:
+        flags.append("--no-adaptive-pseudo-threshold")
+    if getattr(args, "pseudo_confidence_min", None) is not None:
+        flags.extend(["--pseudo-confidence-min", str(args.pseudo_confidence_min)])
     if args.config in ("Full", "Full_wo_Tail", "Pseudo"):
         flags.extend(["--pseudo-mode", args.pseudo_mode])
 

@@ -340,6 +340,30 @@ def main(allowed_baseline: str | None = None) -> None:
         help="Auto: output-aligned for Tail-aware ProtoTail, legacy rank for Base BaCon",
     )
     parser.add_argument(
+        "--novel-prototype-end-epoch",
+        type=int,
+        default=180,
+        help="Epoch cutoff for updating novel prototypes (default: 180)",
+    )
+    parser.add_argument(
+        "--anti-collapse-novel-selector",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable Hungarian bipartite 1-to-1 matching for D2 novel clusters to prevent cluster collapse",
+    )
+    parser.add_argument(
+        "--adaptive-pseudo-threshold",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable class-adaptive confidence thresholding for long-tail self-training",
+    )
+    parser.add_argument(
+        "--pseudo-confidence-min",
+        type=float,
+        default=0.5,
+        help="Minimum confidence threshold for tail classes under adaptive thresholding",
+    )
+    parser.add_argument(
         "--require-paper-dual-selection",
         action="store_true",
         default=False,
@@ -567,7 +591,9 @@ def main(allowed_baseline: str | None = None) -> None:
             n_classes=dataset.num_classes,
             class_temperature=float(baseline_config.get("student_temp", 0.1)),
             seed=seed,
-            novel_epochs=(50, 60, 70, 80, 90, 100) if enable_novel else (),
+            novel_epochs=(50, 70, 90, 110, 130, 150, 170) if enable_novel else (),
+            anti_collapse=bool(arguments.anti_collapse_novel_selector),
+            allow_extended_schedule=True,
         )
         context["persistent_promotion_store"] = paper_store
         if baseline_name == "simgcd":
@@ -613,6 +639,14 @@ def main(allowed_baseline: str | None = None) -> None:
     )
     if arguments.gate_warm_start_from_support and not context["needs_frequency_estimate"]:
         raise ValueError("Gate warm-start requires tail-aware frequency estimation")
+
+    context["adaptive_pseudo_threshold"] = bool(arguments.adaptive_pseudo_threshold)
+    context["pseudo_confidence_min"] = float(arguments.pseudo_confidence_min)
+    baseline_config["adaptive_pseudo_threshold"] = bool(arguments.adaptive_pseudo_threshold)
+    baseline_config["pseudo_confidence_min"] = float(arguments.pseudo_confidence_min)
+    method_settings["novel_prototype_end_epoch"] = int(arguments.novel_prototype_end_epoch)
+    method_settings["adaptive_pseudo_threshold"] = bool(arguments.adaptive_pseudo_threshold)
+    method_settings["pseudo_confidence_min"] = float(arguments.pseudo_confidence_min)
 
     config["kmeans_runtime"] = {
         "backend": arguments.kmeans_backend,

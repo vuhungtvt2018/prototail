@@ -24,7 +24,7 @@ cmd = [
     os.path.join(target_dir, "kaggle_train.py"),
     "--baseline", "simgcd",
     "--dataset-slug", "nguyntrnminhtm/gcd-data",
-    "--dataset-name", "cub",
+    "--dataset-name", "cars",
     "--imb-ratio", "20",
     "--epochs", "200",
     "--eval-interval", "5",
@@ -32,7 +32,7 @@ cmd = [
     "--kmeans-n-init", "10",
     "--kmeans-max-iter", "300",
     "--batch-size", "128",
-    "--run-name", "simgcd_cub_Full_imb20",
+    "--run-name", "simgcd_cars_Full_imb20",
 ]
 extra_flags = ['--use-parts', '--enable-pseudo-labeling', '--enable-novel-pseudo', '--pseudo-mode', 'paper']
 cmd.extend(extra_flags)
