@@ -38,6 +38,7 @@ method:
     prototype_warmup_epochs: 30
     novel_prototype_end_epoch: 180
     prototype_momentum: 0.99
+    prototype_shrinkage_m: 5.0
     pseudo_confidence: 0.7
     pseudo_confidence_min: 0.5
     adaptive_pseudo_threshold: true

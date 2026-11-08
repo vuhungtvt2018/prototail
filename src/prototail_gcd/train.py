@@ -802,6 +802,7 @@ def main(allowed_baseline: str | None = None) -> None:
                     dataset.evaluation_loaders["distribution"],
                     device,
                     paper_store,
+                    method=method,
                 )
                 record["paper_selection"] = selection_event
                 print("[PAPER_D1_D2] " + json.dumps(selection_event, sort_keys=True), flush=True)

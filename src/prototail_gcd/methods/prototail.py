@@ -106,8 +106,20 @@ class PartPrototypeBank(nn.Module):
     def forward(
         self,
         parts: torch.Tensor,
+        shrinkage_m: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        normalized_prototypes = F.normalize(self.prototypes, dim=-1)
+        prototypes = self.prototypes
+        initialized = self.update_counts.to(parts.device) > 0
+        if shrinkage_m > 0 and initialized.any():
+            # IMDb Empirical Bayes Shrinkage: R' = (v / (v + m)) * R + (m / (v + m)) * C
+            counts = self.update_counts.to(parts.device).float().unsqueeze(-1).unsqueeze(-1)
+            c_mean = prototypes[initialized].mean(dim=0, keepdim=True)
+            weight = counts / (counts + shrinkage_m)
+            shrunk = weight * prototypes + (1.0 - weight) * c_mean
+            normalized_prototypes = F.normalize(shrunk, dim=-1)
+        else:
+            normalized_prototypes = F.normalize(prototypes, dim=-1)
+
         gates = self.gates()
         similarities = torch.einsum(
             "bmd,cmd->bcm",
@@ -117,7 +129,6 @@ class PartPrototypeBank(nn.Module):
         scores = (similarities * gates.unsqueeze(0)).sum(dim=-1)
         scores = scores / (gates.sum(dim=-1).unsqueeze(0) + 1e-6)
         # An untouched prototype is an arbitrary orthogonal vector, not evidence.
-        initialized = self.update_counts.to(scores.device) > 0
         scores = scores.masked_fill(~initialized.unsqueeze(0), 0.0)
         return scores, similarities, gates
 
@@ -276,7 +287,10 @@ class ProtoTailPlugin:
         parts, attention = self._components().parts(
             patch_branch.patch_tokens
         )
-        part_scores, _similarities, gates = self._components().prototypes(parts)
+        shrinkage_m = float(self.config.get("prototype_shrinkage_m", 0.0))
+        part_scores, _similarities, gates = self._components().prototypes(
+            parts, shrinkage_m=shrinkage_m
+        )
         auxiliary = dict(output.auxiliary)
         auxiliary["prototail"] = {
             "parts": parts,
@@ -545,10 +559,11 @@ class ProtoTailPlugin:
             return
         pseudo_label_logits = logits
         if not is_simgcd:
+            shrinkage_m = float(self.config.get("prototype_shrinkage_m", 0.0))
             pseudo_label_logits = (
                 logits
                 + float(self.config.get("part_weight", 0.5))
-                * bank(parts)[0]
+                * bank(parts, shrinkage_m=shrinkage_m)[0]
             )
         probabilities = (
             pseudo_label_logits / float(self.config.get("temperature", 0.1))

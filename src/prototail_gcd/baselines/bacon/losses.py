@@ -103,6 +103,7 @@ def estimate_class_frequencies(
     known_frequency_mapping: str = "direct_hungarian",
     novel_frequency_mapping: str = "bacon_rank",
     classifier_temperature: float = 0.1,
+    store: Any = None,
 ) -> torch.Tensor:
     from prototail_gcd.models.dino_backbone import forward_global_and_patches
 
@@ -113,6 +114,7 @@ def estimate_class_frequencies(
     classifier_probs: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     labeled_masks: list[np.ndarray] = []
+    sample_ids: list[np.ndarray] = []
     model.eval()
     with torch.no_grad():
         for batch in loader:
@@ -120,12 +122,14 @@ def estimate_class_frequencies(
                 images = batch.images
                 batch_targets = batch.known_targets
                 batch_labeled = batch.labeled_mask
+                batch_ids = batch.sample_ids
             else:
-                images, batch_targets, _sample_ids, batch_labeled = batch
+                images, batch_targets, batch_ids, batch_labeled = batch
 
             images = images.to(device, non_blocking=True)
             batch_targets = torch.as_tensor(batch_targets).cpu().numpy()
             batch_labeled = torch.as_tensor(batch_labeled).bool().cpu().numpy()
+            sample_ids.append(torch.as_tensor(batch_ids).cpu().numpy().reshape(-1))
             if novel_frequency_mapping == "output_aligned":
                 # Use exactly the same classifier head that receives gradients.
                 # SimGCD returns a 4-tuple; BaCon returns a ModelOutput.
@@ -161,6 +165,18 @@ def estimate_class_frequencies(
     all_features = np.concatenate(features, axis=0)
     all_targets = np.concatenate(targets).astype(np.int64)
     all_labeled = np.concatenate(labeled_masks).astype(bool)
+
+    # Feature 3: update frequency estimation with accepted pseudo-labels from store
+    if store is not None and hasattr(store, "export_state"):
+        promoted = store.export_state()
+        if promoted and len(sample_ids) > 0:
+            all_sample_ids = np.concatenate(sample_ids)
+            by_id = {int(v): i for i, v in enumerate(all_sample_ids)}
+            for s_id, class_id in promoted.items():
+                idx = by_id.get(int(s_id))
+                if idx is not None and not all_labeled[idx]:
+                    all_labeled[idx] = True
+                    all_targets[idx] = int(class_id)
     if not all_labeled.any():
         raise ValueError("distribution estimation requires labeled samples")
     if np.any(all_targets[all_labeled] < 0):

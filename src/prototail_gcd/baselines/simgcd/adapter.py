@@ -226,6 +226,7 @@ class SimGCDAdapter:
                 known_frequency_mapping=str(context.get("known_frequency_mapping", "direct_hungarian")),
                 novel_frequency_mapping=str(context.get("novel_frequency_mapping", "bacon_rank")),
                 classifier_temperature=float(config.get("student_temp", 0.1)),
+                store=context.get("persistent_promotion_store"),
             )
         finally:
             model.train()

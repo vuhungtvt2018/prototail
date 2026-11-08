@@ -52,6 +52,9 @@ class PaperDualSelector:
         class_temperature: float = 0.1,
         anti_collapse: bool = True,
         allow_extended_schedule: bool = True,
+        fast_selection: bool = True,
+        temporal_stability: bool = True,
+        use_fused_scores: bool = True,
     ) -> None:
         if not (0 < n_known < n_classes):
             raise ValueError("Selector requires both known and novel classes")
@@ -72,7 +75,11 @@ class PaperDualSelector:
         self.seed = seed
         self.class_temperature = class_temperature
         self.anti_collapse = anti_collapse
+        self.fast_selection = fast_selection
+        self.temporal_stability = temporal_stability
+        self.use_fused_scores = use_fused_scores
         self.previous_accepted_dbi: float | None = None
+        self.previous_centers: np.ndarray | None = None
         self.executed_known: set[int] = set()
         self.executed_novel: set[int] = set()
         self.selected_known_classes: set[int] = set()
@@ -81,7 +88,14 @@ class PaperDualSelector:
         return epoch in self.known_epochs or epoch in self.novel_epochs
 
     @torch.no_grad()
-    def collect(self, model: Any, adapter: Any, loader: Any, device: torch.device) -> Snapshot:
+    def collect(
+        self,
+        model: Any,
+        adapter: Any,
+        loader: Any,
+        device: torch.device,
+        method: Any = None,
+    ) -> Snapshot:
         was_training = model.training
         model.eval()
         sid: list[np.ndarray] = []
@@ -97,6 +111,11 @@ class PaperDualSelector:
                 if np.any(raw_targets[~raw_mask] != -1):
                     raise RuntimeError("Unlabeled GT leak in distribution loader")
                 output = adapter.forward_eval(model, batch.images.to(device))
+                if method is not None and hasattr(method, "augment_output"):
+                    try:
+                        output = method.augment_output(output)
+                    except Exception:
+                        pass
                 if "classification" in output.branches:
                     cls_branch = output.branches["classification"]
                     feature_branch = output.branches["contrastive"]
@@ -105,7 +124,13 @@ class PaperDualSelector:
                     feature_branch = cls_branch
                 if cls_branch.logits is None or feature_branch.global_features is None:
                     raise RuntimeError("Selector requires logits and CLS features")
-                logits = cls_branch.logits.float() / self.class_temperature
+                logits = cls_branch.logits.float()
+                # Feature 2: use fused logits (global logits + 0.5 * part_scores) if prototail is active
+                if self.use_fused_scores and "prototail" in output.auxiliary:
+                    part_scores = output.auxiliary["prototail"].get("part_scores")
+                    if isinstance(part_scores, torch.Tensor):
+                        logits = logits + 0.5 * part_scores.float()
+                logits = logits / self.class_temperature
                 feat.append(torch.nn.functional.normalize(
                     feature_branch.global_features.float(), dim=-1
                 ).cpu().numpy())
@@ -182,13 +207,15 @@ class PaperDualSelector:
             }
         return {"accepted": 0, "reason": "no_eligible_known_predictions"}
 
-    def _partition(self, features: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    def _partition(self, features: np.ndarray, seed: int, init_centers: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         n = len(features)
         if n <= self.n_classes:
             raise ValueError("Need more samples than classes for paper clustering")
         rng = np.random.default_rng(seed)
         fit_ids = rng.choice(n, min(n, 15000), replace=False)
-        estimator = KMeans(n_clusters=self.n_classes, n_init=10, random_state=seed)
+        n_init = 1 if init_centers is not None else 10
+        init_method = init_centers if init_centers is not None else "k-means++"
+        estimator = KMeans(n_clusters=self.n_classes, init=init_method, n_init=n_init, random_state=seed)
         estimator.fit(features[fit_ids])
         labels = pairwise_distances_argmin(features, estimator.cluster_centers_)
         return labels.astype(np.int64), estimator.cluster_centers_
@@ -226,19 +253,39 @@ class PaperDualSelector:
         if len(known_cols) != self.n_known:
             raise RuntimeError("Known-cluster matching incomplete")
         known_clusters = set(int(x) for x in known_cluster_rows)
-        # Silhouette is defined on a random subset; fail closed when undefined.
-        subset_rng = np.random.default_rng(self.seed + 7 + epoch)
-        unlabeled_ids = np.flatnonzero(unlabeled)
-        sub = subset_rng.choice(unlabeled_ids, min(len(unlabeled_ids), 2000), replace=False)
-        sub_clusters = labels_a[sub]
-        uniq = len(np.unique(sub_clusters))
-        if uniq < 2 or uniq >= len(sub):
-            return {"accepted": 0, "reason": "undefined_silhouette"}
-        sil_values = silhouette_samples(features[sub], sub_clusters)
-        sil_means = np.full(k, -np.inf, dtype=np.float64)
-        for c in np.unique(sub_clusters):
-            sil_means[c] = float(sil_values[sub_clusters == c].mean())
-        median_silhouette = float(np.median(sil_means[np.isfinite(sil_means)]))
+        # Cluster compactness: either fast linear-time compactness or full silhouette
+        if not self.fast_selection:
+            subset_rng = np.random.default_rng(self.seed + 7 + epoch)
+            unlabeled_ids = np.flatnonzero(unlabeled)
+            sub = subset_rng.choice(unlabeled_ids, min(len(unlabeled_ids), 2000), replace=False)
+            sub_clusters = labels_a[sub]
+            uniq = len(np.unique(sub_clusters))
+            if uniq < 2 or uniq >= len(sub):
+                return {"accepted": 0, "reason": "undefined_silhouette"}
+            sil_values = silhouette_samples(features[sub], sub_clusters)
+            sil_means = np.full(k, -np.inf, dtype=np.float64)
+            for c in np.unique(sub_clusters):
+                sil_means[c] = float(sil_values[sub_clusters == c].mean())
+            median_silhouette = float(np.median(sil_means[np.isfinite(sil_means)]))
+        else:
+            centers_norm = centers_a / np.linalg.norm(centers_a, axis=-1, keepdims=True).clip(1e-8)
+            compactness = np.zeros(k, dtype=np.float64)
+            for c in range(k):
+                c_m = np.flatnonzero(labels_a_u == c)
+                if len(c_m) > 0:
+                    sims = features[unlabeled][c_m] @ centers_norm[c]
+                    compactness[c] = float(sims.mean())
+            valid_c = compactness[size_a >= 10]
+            median_silhouette = float(np.median(valid_c)) if len(valid_c) > 0 else 0.5
+            sil_means = compactness
+
+        temporal_ok = np.ones(k, dtype=bool)
+        if self.temporal_stability and self.previous_centers is not None:
+            prev_norm = self.previous_centers / np.linalg.norm(self.previous_centers, axis=-1, keepdims=True).clip(1e-8)
+            curr_norm = centers_a / np.linalg.norm(centers_a, axis=-1, keepdims=True).clip(1e-8)
+            max_temporal_sim = np.max(curr_norm @ prev_norm.T, axis=1)
+            temporal_ok = max_temporal_sim >= 0.5
+
         if len(np.unique(labels_a_u)) < 2:
             return {"accepted": 0, "reason": "undefined_dbi"}
         dbi = float(davies_bouldin_score(features[unlabeled], labels_a_u))
@@ -252,7 +299,7 @@ class PaperDualSelector:
             for cluster in range(k):
                 if cluster in known_clusters or size_a[cluster] < 10:
                     continue
-                if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette:
+                if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette or not temporal_ok[cluster]:
                     continue
                 members = np.flatnonzero((labels_a == cluster) & unlabeled)
                 member_predictions = predictions[members]
@@ -287,7 +334,7 @@ class PaperDualSelector:
             for cluster in range(k):
                 if cluster in known_clusters or size_a[cluster] < 10:
                     continue
-                if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette:
+                if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette or not temporal_ok[cluster]:
                     continue
                 members = np.flatnonzero((labels_a == cluster) & unlabeled)
                 if len(members) == 0:
@@ -353,12 +400,22 @@ class PaperDualSelector:
                         used_novel_classes.add(novel_id)
         if accepted_total:
             self.previous_accepted_dbi = dbi
+        self.previous_centers = centers_a.copy()
         return {"accepted": accepted_total, "clusters": accepted_clusters, "dbi": dbi}
 
-    def run(self, epoch: int, model: Any, adapter: Any, loader: Any, device: torch.device, store: Any) -> dict[str, Any]:
+    def run(
+        self,
+        epoch: int,
+        model: Any,
+        adapter: Any,
+        loader: Any,
+        device: torch.device,
+        store: Any,
+        method: Any = None,
+    ) -> dict[str, Any]:
         if not self.scheduled(epoch):
             return {}
-        snap = self.collect(model, adapter, loader, device)
+        snap = self.collect(model, adapter, loader, device, method=method)
         event: dict[str, Any] = {"epoch": epoch, "store_before": len(store.export_state())}
         if epoch in self.known_epochs and epoch not in self.executed_known:
             event["known"] = self.select_known(snap, store)
