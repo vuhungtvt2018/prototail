@@ -1,3 +1,6 @@
 # Python-generated files
 __pycache__/
-prototail_gcd.egg-info
+prototail_gcd.egg-info/
+build_kaggle_kernel/
+scratch/
+outputs/
