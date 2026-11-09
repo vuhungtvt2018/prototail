@@ -110,7 +110,7 @@ def _build_code_bundle_b64(repo_root: Path) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Push ProtoTail training job to Kaggle GPU")
     parser.add_argument("--baseline", choices=["simgcd", "bacon"], default="simgcd")
-    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cub200", "cars", "car", "scars", "aircraft", "air", "fgvc_aircraft"], default="cub")
+    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cub200", "cars", "car", "scars", "aircraft", "air", "fgvc_aircraft", "herbarium", "herbarium19", "herb19"], default="cub")
     parser.add_argument("--imb-ratio", "--imb_ratio", dest="imb_ratio", type=int, choices=[10, 20, 50, 100], default=20)
     parser.add_argument(
         "--config",
@@ -130,6 +130,8 @@ def main():
         "air": "aircraft",
         "fgvc_aircraft": "aircraft",
         "cub200": "cub",
+        "herbarium": "herbarium19",
+        "herb19": "herbarium19",
     }
     args.dataset_name = name_map.get(args.dataset_name.lower(), args.dataset_name.lower())
 
@@ -251,16 +253,24 @@ sys.exit(process.returncode)
     sys.stdout.flush()
 
     cmd_push = ["kaggle", "kernels", "push", "-p", str(staging_dir)]
-    res = subprocess.run(cmd_push)
+    res = subprocess.run(cmd_push, capture_output=True, text=True)
+    if res.stdout:
+        print(res.stdout.strip())
+    if res.stderr:
+        print(res.stderr.strip())
 
-    if res.returncode == 0:
+    combined_output = (res.stdout or "") + (res.stderr or "")
+    if res.returncode == 0 and "Kernel push error:" not in combined_output:
         print("\n" + "=" * 65)
         print("  >>> SUCCESS! Kernel successfully pushed to Kaggle GPU <<<")
         print(f"  Background training on T4 GPU for: {kaggle_user}")
         print(f"  Status check: kaggle kernels status {kaggle_user}/{kernel_slug}")
         print("=" * 65)
     else:
-        print(f"\n[Error] Push failed (code {res.returncode}). Check credentials or connection.")
+        print("\n" + "=" * 65)
+        print(f"  >>> PUSH FAILED! Kaggle rejected the kernel push <<<")
+        print(f"  Reason: Check the error above (e.g. GPU session quota or credentials).")
+        print("=" * 65)
 
 
 if __name__ == "__main__":
