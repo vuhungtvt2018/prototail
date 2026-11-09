@@ -540,12 +540,20 @@ def main(allowed_baseline: str | None = None) -> None:
     experiment_name = str(config["experiment"]["name"])
     checkpoint_path = output_directory / f"{experiment_name}.pt"
     best_checkpoint_path = output_directory / f"{experiment_name}.best.pt"
+    best_unl_checkpoint_path = output_directory / f"{experiment_name}.best_unl.pt"
     metrics_path = output_directory / f"{experiment_name}.metrics.jsonl"
     config_path = output_directory / f"{experiment_name}.config.yaml"
     with config_path.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(config, stream, sort_keys=False)
 
     best_test_acc = -1.0
+    best_test_epoch = -1
+    best_test_metrics: dict[str, Any] = {}
+    best_unl_acc = -1.0
+    best_unl_epoch = -1
+    best_unl_metrics: dict[str, Any] = {}
+    final_test_metrics: dict[str, Any] = {}
+    final_unl_metrics: dict[str, Any] = {}
     known_class_count = len(dataset.known_class_ids)
     eval_interval = (
         arguments.eval_interval
@@ -611,9 +619,25 @@ def main(allowed_baseline: str | None = None) -> None:
             metrics_file.flush()
             if "unlabeled_train" in record:
                 ut = record["unlabeled_train"]
-                print(f"[UNLABELED-TRAIN EVAL] Epoch {epoch + 1}: All {ut.get('all_acc', 0.0):.2f} | Known {ut.get('known_acc', 0.0):.2f} | Novel {ut.get('novel_acc', 0.0):.2f} | H-Score {ut.get('h_score', 0.0):.2f}", flush=True)
+                all_u = ut.get("all_acc", 0.0)
+                print(f"[UNLABELED-TRAIN EVAL] Epoch {epoch + 1}: All {all_u:.2f} | Known {ut.get('known_acc', 0.0):.2f} | Novel {ut.get('novel_acc', 0.0):.2f} | H-Score {ut.get('h_score', 0.0):.2f}", flush=True)
                 if "k_many" in ut and ut["k_many"] is not None and ut["k_many"] >= 0:
                     print(f"  Shot Breakdown (Train): Known [Many: {ut.get('k_many', 0.0):.2f}, Med: {ut.get('k_med', 0.0):.2f}, Few: {ut.get('k_few', 0.0):.2f}] | Novel [Many: {ut.get('u_many', 0.0):.2f}, Med: {ut.get('u_med', 0.0):.2f}, Few: {ut.get('u_few', 0.0):.2f}]", flush=True)
+
+                if all_u > best_unl_acc:
+                    best_unl_acc = all_u
+                    best_unl_epoch = epoch + 1
+                    best_unl_metrics = dict(ut)
+                    torch.save(
+                        {
+                            "model": model.state_dict(),
+                            "epoch": epoch + 1,
+                            "best_unlabeled_metrics": ut,
+                            "config": config,
+                        },
+                        best_unl_checkpoint_path,
+                    )
+                    print(f"  [*] New best Unlabeled-Train All Acc: {best_unl_acc:.2f}% -> saved to {best_unl_checkpoint_path.name}", flush=True)
 
             if "test" in record:
                 test_m = record["test"]
@@ -636,6 +660,8 @@ def main(allowed_baseline: str | None = None) -> None:
 
                 if all_a > best_test_acc:
                     best_test_acc = all_a
+                    best_test_epoch = epoch + 1
+                    best_test_metrics = dict(test_m)
                     torch.save(
                         {
                             "model": model.state_dict(),
@@ -646,6 +672,12 @@ def main(allowed_baseline: str | None = None) -> None:
                         best_checkpoint_path,
                     )
                     print(f"  [*] New best test All Acc: {best_test_acc:.2f}% -> saved to {best_checkpoint_path.name}", flush=True)
+
+            if is_last_epoch:
+                if "test" in record:
+                    final_test_metrics = dict(record["test"])
+                if "unlabeled_train" in record:
+                    final_unl_metrics = dict(record["unlabeled_train"])
             if method is not None and ((epoch + 1) % 10 == 0 or is_last_epoch):
                 try:
                     with torch.no_grad():
@@ -684,6 +716,67 @@ def main(allowed_baseline: str | None = None) -> None:
                 },
                 checkpoint_path,
             )
+
+    summary_path = output_directory / f"{experiment_name}.summary.json"
+    summary_data = {
+        "experiment_name": experiment_name,
+        "baseline": baseline_name,
+        "ablation_config": detected_config,
+        "dataset_name": dataset_name,
+        "imbalance_ratio": config["data"]["protocol"].get("imbalance_ratio"),
+        "total_epochs": epoch_count,
+        "best_unlabeled_epoch": best_unl_epoch,
+        "best_test_epoch": best_test_epoch,
+        "best_unlabeled_train_metrics": best_unl_metrics,
+        "best_test_metrics": best_test_metrics,
+        "final_test_metrics": final_test_metrics,
+        "final_unlabeled_train_metrics": final_unl_metrics,
+        "checkpoint_final": str(checkpoint_path.name),
+        "checkpoint_best_unlabeled": str(best_unl_checkpoint_path.name),
+        "checkpoint_best_test": str(best_checkpoint_path.name),
+    }
+    with summary_path.open("w", encoding="utf-8") as stream:
+        json.dump(summary_data, stream, indent=2, sort_keys=True)
+
+    def _format_eval_line(label: str, m: dict[str, Any]) -> str:
+        if not m:
+            return f"  {label:<18} (No evaluation record)"
+        all_v = m.get("all_acc", 0.0)
+        k_v = m.get("known_acc", 0.0)
+        n_v = m.get("novel_acc", 0.0)
+        h_v = m.get("h_score", 0.0)
+        line = f"  {label:<18} All: {all_v:6.2f}% | Known: {k_v:6.2f}% | Novel: {n_v:6.2f}% | H-Score: {h_v:6.2f}%"
+        if "k_many" in m and m["k_many"] is not None and m["k_many"] >= 0:
+            line += (
+                f"\n    Shot Breakdown:   Known [Many: {m.get('k_many', 0.0):.2f}, Med: {m.get('k_med', 0.0):.2f}, Few: {m.get('k_few', 0.0):.2f}]"
+                f"\n                      Novel [Many: {m.get('u_many', 0.0):.2f}, Med: {m.get('u_med', 0.0):.2f}, Few: {m.get('u_few', 0.0):.2f}]"
+            )
+        return line
+
+    print("\n" + "=" * 78)
+    print("                      PROTOTAIL TRAINING SUMMARY")
+    print("=" * 78)
+    print(f"Run Name:          {experiment_name}")
+    print(f"Ablation Setting:  {detected_config}")
+    print(f"Dataset / Split:   {dataset_name} (imb_ratio={config['data']['protocol'].get('imbalance_ratio', 'N/A')})")
+    print(f"Total Epochs:      {epoch_count}")
+    print("-" * 78)
+    print(f"[FINAL MODEL - PAPER PROTOCOL] (Epoch {epoch_count}):")
+    print(_format_eval_line("Disjoint Test:", final_test_metrics))
+    if final_unl_metrics:
+        print(_format_eval_line("Unlabeled Train:", final_unl_metrics))
+    print(f"  Checkpoint File:   {checkpoint_path.name}")
+    print("-" * 78)
+    print(f"[BEST UNLABELED-TRAIN MODEL]   (Achieved at Epoch {best_unl_epoch}):")
+    print(_format_eval_line("Unlabeled Train:", best_unl_metrics))
+    print(f"  Checkpoint File:   {best_unl_checkpoint_path.name}")
+    print("-" * 78)
+    print(f"[BEST DISJOINT-TEST MODEL]     (Achieved at Epoch {best_test_epoch}):")
+    print(_format_eval_line("Disjoint Test:", best_test_metrics))
+    print(f"  Checkpoint File:   {best_checkpoint_path.name}")
+    print("-" * 78)
+    print(f"Summary JSON:      {summary_path.name}")
+    print("=" * 78 + "\n", flush=True)
 
 
 if __name__ == "__main__":

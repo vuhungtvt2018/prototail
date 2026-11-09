@@ -537,6 +537,9 @@ def main() -> None:
     print("\n" + "=" * 65)
     print("Training finished successfully!")
     print(f"Artifacts and metrics saved to: {output_dir}")
+    summary_file = output_dir / f"{run_name}.summary.json"
+    if summary_file.is_file():
+        print(f"Training summary saved to:   {summary_file}")
     print("=" * 65)
 
 
