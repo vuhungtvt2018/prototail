@@ -207,6 +207,9 @@ class SimGCDAdapter:
         if loader is None:
             freq = context.get("class_frequencies")
             if freq is not None:
+                if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
+                    if hasattr(model, "prototail"):
+                        model.prototail.prototypes.warm_start_from_estimated_support(freq)
                 return {"estimated_frequencies": freq}
             return None
         device = next(model.backbone.parameters()).device
@@ -220,7 +223,7 @@ class SimGCDAdapter:
                 finetune_from_block=model.finetune_from_block,
                 random_state=int(config.get("distribution_cluster_seed", 0)),
                 device=device,
-                kmeans_backend=str(context.get("kmeans_backend", "faiss_gpu")),
+                kmeans_backend=str(context.get("kmeans_backend", "sklearn_cpu")),
                 kmeans_n_init=int(context.get("kmeans_n_init", 10)),
                 kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
                 known_frequency_mapping=str(context.get("known_frequency_mapping", "direct_hungarian")),
@@ -230,10 +233,20 @@ class SimGCDAdapter:
                 if not hasattr(model, "prototail"):
                     raise RuntimeError("Gate warm-start requires an attached ProtoTail module")
                 model.prototail.prototypes.warm_start_from_estimated_support(frequencies)
+                targets = model.prototail.prototypes.target_capacities(frequencies)
+                print(
+                    f"\n[ProtoTail Warm-Start] Epoch 0: Initialized gates from estimated support! "
+                    f"Head capacity ~ {targets.max().item():.2f}, Tail capacity ~ {targets.min().item():.2f}, "
+                    f"Gate mean ~ {model.prototail.prototypes.gates().mean().item():.3f}",
+                    flush=True,
+                )
             return {"estimated_frequencies": frequencies}
         except Exception:
             freq = context.get("class_frequencies")
             if freq is not None:
+                if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
+                    if hasattr(model, "prototail"):
+                        model.prototail.prototypes.warm_start_from_estimated_support(freq)
                 return {"estimated_frequencies": freq}
             return None
 

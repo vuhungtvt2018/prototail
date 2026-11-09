@@ -387,6 +387,9 @@ class BaConAdapter:
             strength=float(config["logit_adjustment_strength"]),
         )
         model.train()
+        if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
+            if hasattr(model, "prototail"):
+                model.prototail.prototypes.warm_start_from_estimated_support(frequencies)
         return {
             "estimated_frequencies": frequencies,
             "logit_adjustment": adjustment,

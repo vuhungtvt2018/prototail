@@ -356,7 +356,7 @@ def main() -> None:
     parser.add_argument(
         "--kmeans-backend",
         choices=["sklearn_cpu", "faiss_gpu"],
-        default="faiss_gpu",
+        default="sklearn_cpu",
         help="KMeans backend for clustering eval and distribution estimation",
     )
     parser.add_argument("--kmeans-n-init", type=int, default=10)
@@ -449,7 +449,10 @@ def main() -> None:
     print(f"Kaggle Dataset:   https://www.kaggle.com/datasets/{args.dataset_slug}")
     print(f"Model Baseline:   {args.baseline.upper()}")
     print(f"Method Plugin:    {'ProtoTail (Enabled)' if args.enable_prototail else 'Pure Baseline'}")
-    print(f"Tail-aware Reg:   {'ACTIVE (0.05)' if (args.use_parts and not args.ablate_adaptive_capacity) else 'DISABLED (0.0)'}")
+    is_tailaware = args.use_parts and not args.ablate_adaptive_capacity
+    tail_str = 'ACTIVE (0.05, warm_start=ON)' if is_tailaware else 'DISABLED (0.0)'
+    print(f"Tail-aware Reg:   {tail_str}")
+    print(f"KMeans Backend:   {active_kmeans_backend} (standard paper protocol)")
     print(f"Pseudo-labeling:  {'ACTIVE (D1+D2)' if (args.enable_pseudo_labeling and args.enable_novel_pseudo) else ('ACTIVE (D1)' if args.enable_pseudo_labeling else 'DISABLED')}")
     print(f"Device:           {args.device} (1x T4 GPU)")
     print(f"Epochs:           {args.epochs}")
@@ -517,7 +520,8 @@ def main() -> None:
         cmd.append("--enable-novel-pseudo")
     if getattr(args, "eval_feature_mode", None):
         cmd.extend(["--eval-feature-mode", str(args.eval_feature_mode)])
-    if getattr(args, "gate_warm_start_from_support", False):
+    is_tailaware = getattr(args, "use_parts", False) and not getattr(args, "ablate_adaptive_capacity", False)
+    if getattr(args, "gate_warm_start_from_support", False) or is_tailaware:
         cmd.append("--gate-warm-start-from-support")
     if getattr(args, "known_frequency_mapping", None):
         cmd.extend(["--known-frequency-mapping", str(args.known_frequency_mapping)])

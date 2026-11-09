@@ -117,6 +117,7 @@ def main():
         choices=["Base", "Pseudo", "Prototype", "Prototype_Tailaware", "Full_wo_Tail", "Full"],
         default="Base",
     )
+    parser.add_argument("--kmeans-backend", choices=["sklearn_cpu", "faiss_gpu"], default="sklearn_cpu", help="KMeans clustering backend (default: sklearn_cpu)")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--eval-interval", "--eval_interval", dest="eval_interval", type=int, default=5)
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=128)
@@ -147,11 +148,11 @@ def main():
     elif args.config == "Prototype":
         flags.extend(["--use-parts", "--ablate-adaptive-capacity"])
     elif args.config == "Prototype_Tailaware":
-        flags.append("--use-parts")
+        flags.extend(["--use-parts", "--gate-warm-start-from-support"])
     elif args.config == "Full_wo_Tail":
         flags.extend(["--use-parts", "--ablate-adaptive-capacity", "--enable-pseudo-labeling", "--enable-novel-pseudo"])
     elif args.config == "Full":
-        flags.extend(["--use-parts", "--enable-pseudo-labeling", "--enable-novel-pseudo"])
+        flags.extend(["--use-parts", "--enable-pseudo-labeling", "--enable-novel-pseudo", "--gate-warm-start-from-support"])
 
     exp_name = f"{args.baseline}_{args.dataset_name}_{args.config}_imb{args.imb_ratio}"
     kernel_slug = f"prototail-{args.baseline}-{args.dataset_name}-{args.config.lower()}-imb{args.imb_ratio}".replace("_", "-")
@@ -202,6 +203,7 @@ cmd = [
     "--eval-interval", "{args.eval_interval}",
     "--batch-size", "{args.batch_size}",
     "--run-name", "{exp_name}",
+    "--kmeans-backend", "{args.kmeans_backend}",
 ]
 extra_flags = {flags}
 cmd.extend(extra_flags)

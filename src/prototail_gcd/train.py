@@ -86,7 +86,7 @@ def evaluate(
     accuracy_scale: float = 1.0,
     empty_metric_value: float | None = None,
     use_fp16: bool = False,
-    kmeans_backend: str = "faiss_gpu",
+    kmeans_backend: str = "sklearn_cpu",
     kmeans_n_init: int = 10,
     kmeans_max_iter: int = 300,
 ) -> dict[str, float | None]:
@@ -272,7 +272,7 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument(
         "--kmeans-backend",
         choices=["sklearn_cpu", "faiss_gpu"],
-        default="faiss_gpu",
+        default="sklearn_cpu",
         help="KMeans backend for clustering eval and distribution estimation",
     )
     parser.add_argument("--kmeans-n-init", type=int, default=10)
@@ -288,6 +288,12 @@ def main(allowed_baseline: str | None = None) -> None:
         action="store_true",
         default=False,
         help="Init gates from estimated training supports at epoch 0",
+    )
+    parser.add_argument(
+        "--no-gate-warm-start",
+        action="store_true",
+        default=False,
+        help="Explicitly disable gate warm-start even in tail-aware configurations",
     )
     parser.add_argument(
         "--known-frequency-mapping",
@@ -487,7 +493,12 @@ def main(allowed_baseline: str | None = None) -> None:
     context["kmeans_n_init"] = arguments.kmeans_n_init
     context["kmeans_max_iter"] = arguments.kmeans_max_iter
     context["known_frequency_mapping"] = arguments.known_frequency_mapping
-    context["gate_warm_start_from_support"] = bool(arguments.gate_warm_start_from_support)
+    # Auto-enable gate warm-start for tail-aware configurations (Prototype_Tailaware, Full)
+    is_tailaware = method_enabled and not ablate_capacity
+    auto_warm_start = is_tailaware and not getattr(arguments, "no_gate_warm_start", False)
+    context["gate_warm_start_from_support"] = bool(
+        arguments.gate_warm_start_from_support or auto_warm_start
+    )
     if arguments.eval_feature_mode is not None:
         method_settings["eval_feature_mode"] = arguments.eval_feature_mode
 
@@ -518,9 +529,11 @@ def main(allowed_baseline: str | None = None) -> None:
     print(f"Ablation Component Verification:")
     print(f"  [1] Baseline Objectives:  ACTIVE")
     print(f"  [2] ProtoTail Parts:      {'ACTIVE (attached)' if method_enabled else 'DISABLED'}")
-    print(f"  [3] Adaptive Tail-aware:  {'ACTIVE (capacity_weight=0.05)' if (method_enabled and not ablate_capacity) else 'DISABLED (weight=0.0)'}")
-    print(f"  [4] Pseudo-Labeling (D1): {'ACTIVE (known classes)' if enable_pseudo else 'DISABLED'}")
-    print(f"  [5] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
+    tail_status = 'ACTIVE (capacity_weight=0.05, warm_start=ON)' if (method_enabled and not ablate_capacity and context['gate_warm_start_from_support']) else ('ACTIVE (capacity_weight=0.05, warm_start=OFF)' if (method_enabled and not ablate_capacity) else 'DISABLED (weight=0.0)')
+    print(f"  [3] Adaptive Tail-aware:  {tail_status}")
+    print(f"  [4] Evaluation KMeans:    {arguments.kmeans_backend.upper()} (n_init={arguments.kmeans_n_init}, max_iter={arguments.kmeans_max_iter})")
+    print(f"  [5] Pseudo-Labeling (D1): {'ACTIVE (known classes)' if enable_pseudo else 'DISABLED'}")
+    print(f"  [6] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
     print("=" * 68 + "\n")
 
     engine = TrainingEngine(
