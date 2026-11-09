@@ -14,6 +14,8 @@ import os
 import shutil
 import subprocess
 import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -170,6 +172,8 @@ import io
 import os
 import subprocess
 import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 import zipfile
 
 # 1. Unpack code bundle directly into current working directory
@@ -251,12 +255,12 @@ sys.exit(process.returncode)
 
     if res.returncode == 0:
         print("\n" + "=" * 65)
-        print("  >>> THÀNH CÔNG! Kernel đã được đẩy lên Kaggle <<<")
-        print(f"  Mô hình đang được train ngầm trên GPU T4 của account: {kaggle_user}")
-        print(f"  Kiểm tra trạng thái: kaggle kernels status {kaggle_user}/{kernel_slug}")
+        print("  >>> SUCCESS! Kernel successfully pushed to Kaggle GPU <<<")
+        print(f"  Background training on T4 GPU for: {kaggle_user}")
+        print(f"  Status check: kaggle kernels status {kaggle_user}/{kernel_slug}")
         print("=" * 65)
     else:
-        print(f"\n[Error] Push thất bại (code {res.returncode}). Kiểm tra lại kết nối hoặc account.")
+        print(f"\n[Error] Push failed (code {res.returncode}). Check credentials or connection.")
 
 
 if __name__ == "__main__":
