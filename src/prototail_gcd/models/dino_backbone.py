@@ -16,10 +16,13 @@ BACKBONE_SPECS = {
     },
 }
 
+import time
+from pathlib import Path
+
 HUB_SOURCES = {
     "dino_vitb16": ("facebookresearch/dino:main", "dino_vitb16"),
-    "dinov2_vitb14": ("facebookresearch/dinov2", "dinov2_vitb14"),
-    "dinov2_vitb14_reg": ("facebookresearch/dinov2", "dinov2_vitb14_reg"),
+    "dinov2_vitb14": ("facebookresearch/dinov2:main", "dinov2_vitb14"),
+    "dinov2_vitb14_reg": ("facebookresearch/dinov2:main", "dinov2_vitb14_reg"),
 }
 
 
@@ -31,9 +34,42 @@ def load_backbone(name: str, pretrained: bool = True) -> Any:
         )
 
     repository, entrypoint = HUB_SOURCES[name]
-    if name.startswith("dinov2_"):
-        return torch.hub.load(repository, entrypoint, pretrained=pretrained)
-    return torch.hub.load(repository, entrypoint)
+
+    # 1. Attempt loading from local hub cache if available to bypass GitHub rate limits/timeouts
+    try:
+        hub_dir = Path(torch.hub.get_dir())
+        repo_sanitized = repository.replace("/", "_").replace(":", "_")
+        local_candidate = hub_dir / repo_sanitized
+        if local_candidate.is_dir() and (local_candidate / "hubconf.py").is_file():
+            kwargs = {"pretrained": pretrained} if name.startswith("dinov2_") else {}
+            return torch.hub.load(str(local_candidate), entrypoint, source="local", **kwargs)
+    except Exception:
+        pass
+
+    # 2. Remote load with retry logic and skip_validation=True
+    last_error: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            kwargs = {
+                "skip_validation": True,
+                "trust_repo": True,
+            }
+            if name.startswith("dinov2_"):
+                kwargs["pretrained"] = pretrained
+            return torch.hub.load(repository, entrypoint, **kwargs)
+        except Exception as error:
+            last_error = error
+            delay = attempt * 3
+            print(
+                f"[DINO Backbone Loader] Hub load attempt {attempt}/5 failed: {error}. "
+                f"Retrying in {delay}s...",
+                flush=True,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(
+        f"Failed to load backbone {name!r} from {repository!r} after 5 attempts"
+    ) from last_error
 
 
 def backbone_spec(name: str) -> dict[str, int]:
