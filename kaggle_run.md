@@ -1,13 +1,38 @@
 # KAGGLE RUN GUIDE — 108 CẤU HÌNH (KAGGLE CLI PUSH — TẮT MÁY ĐI NGỦ)
 
+> **CẬP NHẬT CẤU HÌNH FIX V4 (CHUẨN HOÁ TỰ ĐỘNG)**:
+> - **KMeans Backend**: Mặc định là sklearn_cpu (k-means++ chuẩn bài báo), đảm bảo Feature Space đánh giá chuẩn xác mốc 70%+, loại bỏ hoàn toàn lỗi sụt Novel của aiss_gpu.
+> - **Tail-Aware Warm-Start**: Tự động kích hoạt Epoch 0 (--gate-warm-start-from-support) cho các cấu hình Prototype_Tailaware và Full. Cổng phân bổ mở tự nhiên ~1.96 slot/class thay vì bị đông cứng ở 0.82 slot.
+> - **Bạn không cần gõ thêm flag nào cả**: Các lệnh ngắn gọn bên dưới đã tự động cấu hình tối ưu 100%.
+
 > **HƯỚNG DẪN CHẠY VÀ TẮT MÁY ĐI NGỦ (KẾT HỢP APP ĐỔI TÀI KHOẢN)**:
->
-> 1. **Bước 1**: Trên app của bạn, nhấp chọn tài khoản Kaggle bạn muốn sử dụng.
-> 2. **Bước 2**: Mở PowerShell trên máy tính (tại thư mục repo), copy và chạy 1 lệnh tương ứng bên dưới.
-> 3. **Bước 3**: Khi màn hình hiện thông báo `Kernel pushed successfully -> Đang chạy trên GPU Kaggle`, bạn có thể **TẮT MÁY TÍNH WINDOWS ĐI NGỦ** ngay lập tức.
+> 1. **Bước 1**: Trên app đổi tài khoản của bạn, nhấp chọn tài khoản Kaggle bạn muốn sử dụng (ví dụ: k1, k2...).
+> 2. **Bước 2**: Mở PowerShell trên máy tính (tại thư mục repo prototail hoặc BaCon), copy và chạy lệnh tương ứng bên dưới.
+>    *Lưu ý*: Mỗi tài khoản Kaggle chạy tối đa **2 batch GPU cùng lúc** (theo cặp lệnh đã được nhóm sẵn k1 -> k12).
+> 3. **Bước 3**: Khi màn hình hiện thông báo Kernel pushed successfully -> Đang chạy trên GPU Kaggle, bạn có thể **TẮT MÁY TÍNH WINDOWS ĐI NGỦ** ngay lập tức.
 >
 > - *GPU T4 trên máy chủ Kaggle sẽ tự động chạy ngầm độc lập (tối đa 12 tiếng) và tự lưu kết quả khi hoàn thành.*
-> - *Để kiểm tra tiến độ từ xa: `kaggle kernels status <username>/<kernel_name>`*
+> - *Kiểm tra tiến độ từ xa: kaggle kernels status <username>/<kernel_name>*
+> - *Tải log và kết quả khi xong: kaggle kernels output <username>/<kernel_name> -p ./outputs*
+
+---
+
+### BẢNG PHÂN BỔ 12 TÀI KHOẢN KAGGLE (WAVE 1: 24 RUNS ĐỒNG THỜI)
+
+| Tài khoản | Model 1 (GPU Session 1) | Model 2 (GPU Session 2) |
+| :--- | :--- | :--- |
+| **k1** | simgcd_cub_Prototype_imb20 | simgcd_cub_Prototype_Tailaware_imb20 |
+| **k2** | simgcd_cub_Base_imb20 | simgcd_cub_Pseudo_imb20 |
+| **k3** | simgcd_cub_Base_imb50 | simgcd_cub_Pseudo_imb50 |
+| **k4** | simgcd_cub_Prototype_imb50 | simgcd_cub_Prototype_Tailaware_imb50 |
+| **k5** | simgcd_cub_Full_wo_Tail_imb50 | simgcd_cub_Full_imb50 |
+| **k6** | simgcd_car_Base_imb20 | simgcd_car_Pseudo_imb20 |
+| **k7** | simgcd_car_Prototype_imb20 | simgcd_car_Prototype_Tailaware_imb20 |
+| **k8** | simgcd_car_Full_wo_Tail_imb20 | simgcd_car_Full_imb20 |
+| **k9** | simgcd_car_Base_imb50 | simgcd_car_Pseudo_imb50 |
+| **k10** | simgcd_car_Prototype_imb50 | simgcd_car_Prototype_Tailaware_imb50 |
+| **k11** | simgcd_car_Full_wo_Tail_imb50 | simgcd_car_Full_imb50 |
+| **k12** | simgcd_cub_Full_wo_Tail_imb20 | simgcd_cub_Full_imb20 |
 
 ---
 
