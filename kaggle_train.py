@@ -33,6 +33,42 @@ from datetime import datetime
 from pathlib import Path
 
 
+def _setup_kmeans_backend(requested_backend: str) -> str:
+    """Ensure requested KMeans backend is functional on Kaggle GPU.
+    
+    If faiss_gpu is requested, attempts to install faiss-gpu-cu12 or faiss-gpu if missing.
+    If unavailable, falls back to sklearn_cpu to guarantee zero-crash execution.
+    """
+    if requested_backend != "faiss_gpu":
+        return requested_backend
+
+    try:
+        import faiss
+        if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
+            print(f"[Kaggle Setup] faiss-gpu is ready ({faiss.get_num_gpus()} GPU(s) active).")
+            return "faiss_gpu"
+    except Exception:
+        pass
+
+    print("[Kaggle Setup] faiss-gpu not found. Installing faiss-gpu for accelerated clustering...")
+    for pkg in ("faiss-gpu-cu12", "faiss-gpu"):
+        try:
+            res = subprocess.run(
+                [sys.executable, "-m", "pip", "install", pkg, "-q"],
+                check=False,
+            )
+            if res.returncode == 0:
+                import faiss
+                if hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0:
+                    print(f"[Kaggle Setup] Successfully installed {pkg} with GPU support!")
+                    return "faiss_gpu"
+        except Exception as exc:
+            print(f"[Kaggle Setup] Attempt {pkg} failed: {exc}")
+
+    print("[Kaggle Setup] Warning: faiss-gpu could not be installed. Falling back to sklearn_cpu to guarantee completion.")
+    return "sklearn_cpu"
+
+
 def _extract_archive_if_needed(archive_path: Path, target_dir: Path) -> Path:
     """Extract .tar.gz, .tgz, or .zip archive to target_dir if not already extracted."""
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -313,6 +349,32 @@ def main() -> None:
     parser.add_argument("--ablate-adaptive-capacity", "--ablate_adaptive_capacity", dest="ablate_adaptive_capacity", action="store_true", default=False, help="Ablate adaptive capacity")
     parser.add_argument("--enable-pseudo-labeling", "--enable_pseudo_labeling", dest="enable_pseudo_labeling", action="store_true", default=False, help="Enable pseudo labeling")
     parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
+    parser.add_argument(
+        "--kmeans-backend",
+        choices=["sklearn_cpu", "faiss_gpu"],
+        default="faiss_gpu",
+        help="KMeans backend for clustering eval and distribution estimation",
+    )
+    parser.add_argument("--kmeans-n-init", type=int, default=10)
+    parser.add_argument("--kmeans-max-iter", type=int, default=300)
+    parser.add_argument(
+        "--eval-feature-mode",
+        choices=["legacy_concat", "balanced_concat"],
+        default="legacy_concat",
+        help="Evaluation feature concatenation mode",
+    )
+    parser.add_argument(
+        "--gate-warm-start-from-support",
+        action="store_true",
+        default=False,
+        help="Init gates from estimated training supports at epoch 0",
+    )
+    parser.add_argument(
+        "--known-frequency-mapping",
+        choices=["direct_hungarian", "bacon_rank"],
+        default="direct_hungarian",
+        help="Known frequency mapping mode",
+    )
     parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None, help="Kaggle username/account name override")
     args, unknown_args = parser.parse_known_args()
     if args.use_parts:
@@ -397,6 +459,7 @@ def main() -> None:
     print(f"Output Directory: {output_dir}")
     print("=" * 65)
 
+    active_kmeans_backend = _setup_kmeans_backend(args.kmeans_backend)
     # Build execution command for train.py
     train_script = repo_root / "src/prototail_gcd/train.py"
     cmd = [
@@ -422,6 +485,12 @@ def main() -> None:
         str(args.batch_size),
         "--eval-interval",
         str(args.eval_interval),
+        "--kmeans-backend",
+        active_kmeans_backend,
+        "--kmeans-n-init",
+        str(args.kmeans_n_init),
+        "--kmeans-max-iter",
+        str(args.kmeans_max_iter),
         "--num-workers",
         str(args.num_workers),
         "--seed",
@@ -442,6 +511,12 @@ def main() -> None:
         cmd.append("--enable-pseudo-labeling")
     if getattr(args, "enable_novel_pseudo", False):
         cmd.append("--enable-novel-pseudo")
+    if getattr(args, "eval_feature_mode", None):
+        cmd.extend(["--eval-feature-mode", str(args.eval_feature_mode)])
+    if getattr(args, "gate_warm_start_from_support", False):
+        cmd.append("--gate-warm-start-from-support")
+    if getattr(args, "known_frequency_mapping", None):
+        cmd.extend(["--known-frequency-mapping", str(args.known_frequency_mapping)])
     if args.lr is not None:
         cmd.extend(["--lr", str(args.lr)])
     if args.fp16:

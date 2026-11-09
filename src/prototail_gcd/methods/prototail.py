@@ -68,6 +68,31 @@ class PartPrototypeBank(nn.Module):
     def gates(self) -> torch.Tensor:
         return torch.sigmoid(self.gate_logits)
 
+    def target_capacities(self, frequencies: torch.Tensor) -> torch.Tensor:
+        """Paper Appendix B: log-min-max support -> [1, num_slots]."""
+        if frequencies.ndim != 1 or frequencies.numel() != self.num_classes:
+            raise ValueError("frequencies must have one value per class")
+        low, high = frequencies.min(), frequencies.max()
+        if high <= low:
+            return torch.full_like(frequencies, float(self.num_slots))
+        log_frequencies = torch.log(frequencies + 1e-8)
+        log_low = torch.log(low + 1e-8)
+        log_high = torch.log(high + 1e-8)
+        targets = 1.0 + (
+            float(self.num_slots - 1)
+            * (log_frequencies - log_low)
+            / (log_high - log_low + 1e-8)
+        )
+        return targets.clamp(1.0, float(self.num_slots))
+
+    @torch.no_grad()
+    def warm_start_from_estimated_support(self, frequencies: torch.Tensor) -> None:
+        """Approximate the target gate mass at init."""
+        target = self.target_capacities(frequencies.to(self.gate_logits.device))
+        per_slot = (target / self.num_slots).clamp(0.02, 0.98)
+        logits = torch.logit(per_slot).unsqueeze(-1)
+        self.gate_logits.copy_(logits.expand_as(self.gate_logits))
+
     def forward(
         self,
         parts: torch.Tensor,
@@ -326,25 +351,14 @@ class ProtoTailPlugin:
                 device=logits.device,
                 dtype=logits.dtype,
             )
-            low, high = frequencies.min(), frequencies.max()
-            if high <= low:
-                target_capacity = torch.full_like(
-                    frequencies,
-                    float(self._components().prototypes.num_slots),
-                )
-            else:
-                log_frequencies = torch.log(frequencies + 1e-8)
-                log_low = torch.log(low + 1e-8)
-                log_high = torch.log(high + 1e-8)
-                target_capacity = 1.0 + (
-                    float(self._components().prototypes.num_slots - 1)
-                    * (log_frequencies - log_low)
-                    / (log_high - log_low + 1e-8)
-                )
-                target_capacity = target_capacity.clamp(
-                    1.0,
-                    float(self._components().prototypes.num_slots),
-                )
+            target_capacity = self._components().prototypes.target_capacities(
+                frequencies
+            )
+            capacity_mode = str(self.config.get("capacity_target_mode", "frequency"))
+            if capacity_mode == "uniform":
+                target_capacity = target_capacity.mean().expand_as(target_capacity)
+            elif capacity_mode != "frequency":
+                raise ValueError(f"Unsupported capacity_target_mode: {capacity_mode}")
             capacity_loss = F.mse_loss(
                 gates.sum(dim=-1),
                 target_capacity,
@@ -549,8 +563,16 @@ class ProtoTailPlugin:
         pooled_parts = pooled_parts / gates.sum(dim=-1, keepdim=True).clamp_min(
             1e-6
         )
+        feature_mode = self.config.get("eval_feature_mode", "legacy_concat")
+        if feature_mode == "balanced_concat":
+            global_for_eval = F.normalize(global_features, dim=-1)
+            part_for_eval = F.normalize(pooled_parts, dim=-1)
+        elif feature_mode == "legacy_concat":
+            global_for_eval, part_for_eval = global_features, pooled_parts
+        else:
+            raise ValueError(f"Unknown eval_feature_mode: {feature_mode}")
         features = F.normalize(
-            torch.cat((global_features, pooled_parts), dim=-1),
+            torch.cat((global_for_eval, part_for_eval), dim=-1),
             dim=-1,
         )
         return PredictionOutput(class_ids=None, features=features)

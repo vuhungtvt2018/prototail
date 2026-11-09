@@ -16,6 +16,10 @@ import numpy as np
 import torch
 import yaml
 from sklearn.cluster import KMeans
+from prototail_gcd.utils.kmeans_backend import (
+    fit_predict_kmeans,
+    require_kmeans_backend,
+)
 
 from prototail_gcd.baselines.registry import build_baseline
 from prototail_gcd.data.cub import CUBLongTailAdapter
@@ -82,7 +86,12 @@ def evaluate(
     accuracy_scale: float = 1.0,
     empty_metric_value: float | None = None,
     use_fp16: bool = False,
+    kmeans_backend: str = "faiss_gpu",
+    kmeans_n_init: int = 10,
+    kmeans_max_iter: int = 300,
 ) -> dict[str, float | None]:
+    if kmeans_backend == "faiss_gpu" and device.type == "cpu":
+        kmeans_backend = "sklearn_cpu" 
     if hasattr(model, "eval"):
         model.eval()
     target_batches: list[np.ndarray] = []
@@ -145,11 +154,14 @@ def evaluate(
         features = np.concatenate(feature_batches)
         if features.ndim != 2:
             raise ValueError("Clustering features must be a 2-D array")
-        predicted_ids = KMeans(
-            n_clusters=num_classes,
-            random_state=random_state,
-            n_init=10,
-        ).fit_predict(features)
+        predicted_ids = fit_predict_kmeans(
+            features,
+            num_classes,
+            seed=random_state,
+            backend=kmeans_backend,
+            n_init=kmeans_n_init,
+            max_iter=kmeans_max_iter,
+        )
     else:
         raise ValueError("Evaluation loader produced no predictions")
 
@@ -257,6 +269,32 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
     parser.add_argument("--pseudo-warmup-epochs", "--pseudo_warmup_epochs", dest="pseudo_warmup_epochs", type=int, default=None, help="Override pseudo labeling warmup epochs")
     parser.add_argument("--pseudo-confidence", "--pseudo_confidence", dest="pseudo_confidence", type=float, default=None, help="Override pseudo confidence threshold")
+    parser.add_argument(
+        "--kmeans-backend",
+        choices=["sklearn_cpu", "faiss_gpu"],
+        default="faiss_gpu",
+        help="KMeans backend for clustering eval and distribution estimation",
+    )
+    parser.add_argument("--kmeans-n-init", type=int, default=10)
+    parser.add_argument("--kmeans-max-iter", type=int, default=300)
+    parser.add_argument(
+        "--eval-feature-mode",
+        choices=["legacy_concat", "balanced_concat"],
+        default="legacy_concat",
+        help="Evaluation feature concatenation mode",
+    )
+    parser.add_argument(
+        "--gate-warm-start-from-support",
+        action="store_true",
+        default=False,
+        help="Init gates from estimated training supports at epoch 0",
+    )
+    parser.add_argument(
+        "--known-frequency-mapping",
+        choices=["direct_hungarian", "bacon_rank"],
+        default="direct_hungarian",
+        help="Known frequency mapping mode",
+    )
     arguments, _ = parser.parse_known_args()
 
     config = load_experiment(arguments.config)
@@ -445,6 +483,13 @@ def main(allowed_baseline: str | None = None) -> None:
     context["enable_novel_pseudo"] = bool(
         baseline_config.get("enable_novel_pseudo", False)
     )
+    context["kmeans_backend"] = arguments.kmeans_backend
+    context["kmeans_n_init"] = arguments.kmeans_n_init
+    context["kmeans_max_iter"] = arguments.kmeans_max_iter
+    context["known_frequency_mapping"] = arguments.known_frequency_mapping
+    context["gate_warm_start_from_support"] = bool(arguments.gate_warm_start_from_support)
+    if arguments.eval_feature_mode is not None:
+        method_settings["eval_feature_mode"] = arguments.eval_feature_mode
 
     # Determine explicit ablation configuration name
     if not method_enabled and not enable_pseudo:
@@ -539,6 +584,9 @@ def main(allowed_baseline: str | None = None) -> None:
                     accuracy_scale=accuracy_scale,
                     empty_metric_value=empty_metric_val,
                     use_fp16=use_fp16_flag,
+                    kmeans_backend=arguments.kmeans_backend,
+                    kmeans_n_init=arguments.kmeans_n_init,
+                    kmeans_max_iter=arguments.kmeans_max_iter,
                 )
                 record["test"] = evaluate(
                     model,
@@ -553,6 +601,9 @@ def main(allowed_baseline: str | None = None) -> None:
                     accuracy_scale=accuracy_scale,
                     empty_metric_value=empty_metric_val,
                     use_fp16=use_fp16_flag,
+                    kmeans_backend=arguments.kmeans_backend,
+                    kmeans_n_init=arguments.kmeans_n_init,
+                    kmeans_max_iter=arguments.kmeans_max_iter,
                 )
             serialized_record = json.dumps(record, sort_keys=True, allow_nan=False)
             print(serialized_record, flush=True)
@@ -598,14 +649,22 @@ def main(allowed_baseline: str | None = None) -> None:
             if method is not None and ((epoch + 1) % 10 == 0 or is_last_epoch):
                 try:
                     with torch.no_grad():
-                        gates = method._components().prototypes.gates()
+                        bank = method._components().prototypes
+                        gates = bank.gates()
                         mean_g = float(gates.mean().item())
                         max_g = float(gates.max().item())
                         frac_o = float((gates > 0.5).float().mean().item())
                         active_s = float(gates.sum(dim=-1).mean().item())
                         k_slots = float(gates[:known_class_count].sum(dim=-1).mean().item()) if known_class_count > 0 else 0.0
                         u_slots = float(gates[known_class_count:].sum(dim=-1).mean().item()) if gates.shape[0] > known_class_count else 0.0
-                        print(f"[PROTOTYPE CAMERA] Epoch {epoch + 1}: Gate mean={mean_g:.3f} max={max_g:.3f} frac_open(>0.5)={frac_o:.1%} active_slots_per_class~={active_s:.2f}", flush=True)
+                        freq = context.get("estimated_frequencies", context.get("class_frequencies"))
+                        mae_str = ""
+                        if freq is not None:
+                            f_t = torch.as_tensor(freq, dtype=gates.dtype, device=gates.device)
+                            desired = bank.target_capacities(f_t)
+                            c_mae = float((gates.sum(dim=-1) - desired).abs().mean().item())
+                            mae_str = f" capacity_mae={c_mae:.4f}"
+                        print(f"[PROTOTYPE CAMERA] Epoch {epoch + 1}: Gate mean={mean_g:.3f} max={max_g:.3f} frac_open(>0.5)={frac_o:.1%} active_slots_per_class~={active_s:.2f}{mae_str}", flush=True)
                         print(f"  Active Slots/Class: Known ~ {k_slots:.2f} | Novel ~ {u_slots:.2f}", flush=True)
                 except Exception:
                     pass
