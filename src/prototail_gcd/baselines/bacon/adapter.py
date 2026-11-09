@@ -390,6 +390,13 @@ class BaConAdapter:
         if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
             if hasattr(model, "prototail"):
                 model.prototail.prototypes.warm_start_from_estimated_support(frequencies)
+                targets = model.prototail.prototypes.target_capacities(frequencies)
+                print(
+                    f"\n[ProtoTail Warm-Start] Epoch 0 (BaCon): Initialized gates from estimated support! "
+                    f"Head capacity ~ {targets.max().item():.2f}, Tail capacity ~ {targets.min().item():.2f}, "
+                    f"Gate mean ~ {model.prototail.prototypes.gates().mean().item():.3f}",
+                    flush=True,
+                )
         return {
             "estimated_frequencies": frequencies,
             "logit_adjustment": adjustment,

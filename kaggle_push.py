@@ -110,7 +110,7 @@ def _build_code_bundle_b64(repo_root: Path) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Push ProtoTail training job to Kaggle GPU")
     parser.add_argument("--baseline", choices=["simgcd", "bacon"], default="simgcd")
-    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cub200", "cars", "car", "scars", "aircraft", "air", "fgvc_aircraft", "herbarium", "herbarium19", "herb19"], default="cub")
+    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cub200", "cars", "car", "scars", "aircraft", "air", "fgvc_aircraft", "herbarium", "herbarium19", "herb19", "inat", "inat2018", "inaturalist", "inaturalist2018"], default="cub")
     parser.add_argument("--imb-ratio", "--imb_ratio", dest="imb_ratio", type=int, choices=[10, 20, 50, 100], default=20)
     parser.add_argument(
         "--config",
@@ -133,6 +133,10 @@ def main():
         "cub200": "cub",
         "herbarium": "herbarium19",
         "herb19": "herbarium19",
+        "inat": "inat2018",
+        "inat2018": "inat2018",
+        "inaturalist": "inat2018",
+        "inaturalist2018": "inat2018",
     }
     args.dataset_name = name_map.get(args.dataset_name.lower(), args.dataset_name.lower())
 

@@ -4,6 +4,7 @@ from prototail_gcd.data.cub import CUBLongTailAdapter
 from prototail_gcd.data.cars import CarsLongTailAdapter
 from prototail_gcd.data.aircraft import AircraftLongTailAdapter
 from prototail_gcd.data.herbarium19 import HerbariumLongTailAdapter
+from prototail_gcd.data.inat2018 import INat2018LongTailAdapter
 
 ADAPTERS = {
     "cub": CUBLongTailAdapter,
@@ -16,6 +17,10 @@ ADAPTERS = {
     "herbarium": HerbariumLongTailAdapter,
     "herbarium19": HerbariumLongTailAdapter,
     "herb19": HerbariumLongTailAdapter,
+    "inat": INat2018LongTailAdapter,
+    "inat2018": INat2018LongTailAdapter,
+    "inaturalist": INat2018LongTailAdapter,
+    "inaturalist2018": INat2018LongTailAdapter,
 }
 
 
@@ -33,5 +38,6 @@ __all__ = [
     "CarsLongTailAdapter",
     "AircraftLongTailAdapter",
     "HerbariumLongTailAdapter",
+    "INat2018LongTailAdapter",
     "get_dataset_adapter",
 ]

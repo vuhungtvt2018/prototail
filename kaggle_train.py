@@ -118,6 +118,9 @@ def _prepare_gcd_dataset(
         "aircraft": ["aircraft", "fgvc_aircraft", "fgvc-aircraft-2013b"],
         "herbarium": ["Herbarium 19", "herbarium", "herbarium19", "herb19"],
         "herbarium19": ["Herbarium 19", "herbarium", "herbarium19", "herb19"],
+        "inat2018": ["iNaturalist 2018", "inat2018", "inat", "inaturalist"],
+        "inat": ["iNaturalist 2018", "inat2018", "inat", "inaturalist"],
+        "inaturalist": ["iNaturalist 2018", "inat2018", "inat", "inaturalist"],
     }.get(norm, [norm])
 
     def _resolve_from_dirs(dirs: list[Path]) -> Path | None:
