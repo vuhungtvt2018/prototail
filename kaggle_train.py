@@ -116,6 +116,8 @@ def _prepare_gcd_dataset(
         "cub": ["cub", "CUB_200_2011", "cub200"],
         "cars": ["car", "cars", "stanford_cars", "scars"],
         "aircraft": ["aircraft", "fgvc_aircraft", "fgvc-aircraft-2013b"],
+        "herbarium": ["Herbarium 19", "herbarium", "herbarium19", "herb19"],
+        "herbarium19": ["Herbarium 19", "herbarium", "herbarium19", "herb19"],
     }.get(norm, [norm])
 
     def _resolve_from_dirs(dirs: list[Path]) -> Path | None:
@@ -195,6 +197,8 @@ def _prepare_gcd_dataset(
         pattern = f"cars196_k98_imb{imb_ratio}"
     elif norm in ("aircraft", "fgvc_aircraft"):
         pattern = f"aircraft_k80_imb{imb_ratio}"
+    elif norm in ("herbarium", "herbarium19", "herb19"):
+        pattern = f"herbarium19_k341_imb{imb_ratio}"
     else:
         pattern = f"*_imb{imb_ratio}"
 
