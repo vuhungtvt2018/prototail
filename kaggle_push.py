@@ -107,6 +107,26 @@ def _build_code_bundle_b64(repo_root: Path) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _safe_clean_staging_dir(staging_dir: Path) -> None:
+    """Safely clean and create staging directory, resilient to Windows file handles."""
+    if staging_dir.exists():
+        try:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        except Exception:
+            pass
+    # If the directory still exists (e.g. held by an active handle or indexing), clean remaining children
+    if staging_dir.exists():
+        for child in staging_dir.iterdir():
+            try:
+                if child.is_file() or child.is_symlink():
+                    child.unlink(missing_ok=True)
+                elif child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+            except Exception:
+                pass
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Push ProtoTail training job to Kaggle GPU")
     parser.add_argument("--baseline", choices=["simgcd", "bacon"], default="simgcd")
@@ -163,9 +183,7 @@ def main():
 
     # Staging folder for kernel push
     staging_dir = repo_root / "build_kaggle_kernel"
-    if staging_dir.exists():
-        shutil.rmtree(staging_dir)
-    staging_dir.mkdir(parents=True, exist_ok=True)
+    _safe_clean_staging_dir(staging_dir)
 
     # Build self-contained code bundle
     print("Packaging ProtoTail codebase into self-contained bundle...")
