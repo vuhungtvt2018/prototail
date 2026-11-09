@@ -443,6 +443,8 @@ def main() -> None:
 
     print("=" * 65)
     print("        PROTOTAIL KAGGLE 1x T4 TRAINING RUNNER")
+    active_kmeans_backend = _setup_kmeans_backend(args.kmeans_backend)
+
     print("=" * 65)
     print(f"Kaggle Account:   {kaggle_account}")
     print(f"Ablation Setting: {detected_config}")
@@ -465,8 +467,6 @@ def main() -> None:
     print(f"Splits Root:      {splits_root}")
     print(f"Output Directory: {output_dir}")
     print("=" * 65)
-
-    active_kmeans_backend = _setup_kmeans_backend(args.kmeans_backend)
     # Build execution command for train.py
     train_script = repo_root / "src/prototail_gcd/train.py"
     cmd = [
