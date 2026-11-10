@@ -205,10 +205,10 @@ class SimGCDAdapter:
             return None
         loader = context.get("distribution_loader")
         if loader is None:
-            freq = context.get("class_frequencies")
-            if freq is not None:
-                return {"estimated_frequencies": freq}
-            return None
+            raise RuntimeError(
+                "Distribution estimator needs a training distribution_loader; "
+                "oracle class frequencies must not be used as a fallback"
+            )
         device = next(model.backbone.parameters()).device
         from prototail_gcd.baselines.bacon.losses import estimate_class_frequencies
         try:
@@ -221,13 +221,9 @@ class SimGCDAdapter:
                 random_state=int(config.get("distribution_cluster_seed", 0)),
                 device=device,
             )
+        finally:
             model.train()
-            return {"estimated_frequencies": frequencies}
-        except Exception:
-            freq = context.get("class_frequencies")
-            if freq is not None:
-                return {"estimated_frequencies": freq}
-            return None
+        return {"estimated_frequencies": frequencies}
 
     def after_optimizer_step(
         self,

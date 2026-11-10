@@ -98,7 +98,7 @@ class ProtoTailTests(unittest.TestCase):
 
         torch.testing.assert_close(losses["part_classification"], expected)
 
-    def test_simgcd_unlabeled_pseudo_labels_can_update_known_prototypes(self):
+    def test_simgcd_unlabeled_pseudo_labels_do_not_contaminate_known_prototypes(self):
         torch = self.torch
         plugin = self.plugin_type()
         model = torch.nn.Linear(4, 3)
@@ -135,7 +135,7 @@ class ProtoTailTests(unittest.TestCase):
             },
         )
 
-        self.assertFalse(
+        self.assertTrue(
             torch.equal(before, plugin.components.prototypes.prototypes[0])
         )
 
@@ -233,7 +233,7 @@ class ProtoTailTests(unittest.TestCase):
         )
         torch.testing.assert_close(losses["capacity_regularization"], expected)
 
-    def test_method_optimizer_keeps_reference_shared_backbone_step(self):
+    def test_method_optimizer_does_not_duplicate_backbone_parameters(self):
         torch = self.torch
         plugin = self.plugin_type()
 
@@ -255,18 +255,11 @@ class ProtoTailTests(unittest.TestCase):
             for parameter in group["params"]
         }
 
-        self.assertIn(
-            id(model.backbone.blocks[11].weight),
-            part_parameter_ids,
-        )
-        self.assertIn(
-            id(model.backbone.blocks[11].weight),
-            {id(parameter) for parameter in plugin.shared_parameters()},
-        )
         self.assertNotIn(
-            id(model.backbone.blocks[10].weight),
+            id(model.backbone.blocks[11].weight),
             part_parameter_ids,
         )
+        self.assertEqual(len(plugin.shared_parameters()), 0)
 
     def test_bacon_inference_returns_part_augmented_features(self):
         torch = self.torch

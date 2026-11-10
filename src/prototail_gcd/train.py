@@ -257,6 +257,28 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
     parser.add_argument("--pseudo-warmup-epochs", "--pseudo_warmup_epochs", dest="pseudo_warmup_epochs", type=int, default=None, help="Override pseudo labeling warmup epochs")
     parser.add_argument("--pseudo-confidence", "--pseudo_confidence", dest="pseudo_confidence", type=float, default=None, help="Override pseudo confidence threshold")
+    parser.add_argument(
+        "--memax-weight",
+        "--memax_weight",
+        dest="memax_weight",
+        type=float,
+        default=None,
+        help="Override baseline memax_weight (SimGCD)",
+    )
+    parser.add_argument(
+        "--use-momentum-teacher",
+        "--use_momentum_teacher",
+        dest="use_momentum_teacher",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable GlobalEMATeacher with momentum 0.996",
+    )
+    parser.add_argument(
+        "--eval-feature-mode",
+        choices=["legacy_concat", "original_parts_concat"],
+        default="legacy_concat",
+        help="Feature mode for ProtoTail evaluation (legacy_concat or original_parts_concat)",
+    )
     arguments, _ = parser.parse_known_args()
 
     config = load_experiment(arguments.config)
@@ -316,6 +338,7 @@ def main(allowed_baseline: str | None = None) -> None:
         method_settings["pseudo_warmup_epochs"] = arguments.pseudo_warmup_epochs
     if arguments.pseudo_confidence is not None:
         method_settings["pseudo_confidence"] = arguments.pseudo_confidence
+    method_settings["eval_feature_mode"] = str(arguments.eval_feature_mode or "legacy_concat")
     method = None
     if method_enabled:
         method_name = method_config.get("name")
@@ -357,6 +380,15 @@ def main(allowed_baseline: str | None = None) -> None:
     if baseline_name == "simgcd" and hasattr(baseline, "eval_head"):
         baseline.eval_head = str(arguments.simgcd_eval_head or "kmeans")
     baseline_config = config["baseline"]["resolved"]
+    if baseline_name == "simgcd":
+        # Alo_SimGCD/scripts/run_{cub,cars}.sh defaults.
+        if getattr(arguments, "memax_weight", None) is not None:
+            baseline_config["memax_weight"] = float(arguments.memax_weight)
+        elif dataset_name in ("cars", "car", "scars", "stanford_cars"):
+            baseline_config["memax_weight"] = 1.0
+        elif dataset_name in ("cub", "cub200"):
+            baseline_config["memax_weight"] = 2.0
+        print("[REF_PARITY] memax_weight:", baseline_config["memax_weight"], flush=True)
     if enable_pseudo:
         baseline_config["enable_pseudo_labeling"] = True
     if enable_novel:
@@ -432,9 +464,8 @@ def main(allowed_baseline: str | None = None) -> None:
     context["num_known_classes"] = len(dataset.known_class_ids)
     if hasattr(dataset, "class_counts") and dataset.class_counts is not None:
         context["class_counts"] = dataset.class_counts
-        context["class_frequencies"] = torch.as_tensor(
-            dataset.class_counts, dtype=torch.float32, device=device
-        )
+        # For reporting shot metrics ONLY. Never provide full GT counts to
+        # training losses: the novel labels are hidden in the GCD protocol.
     context["total_epochs"] = epoch_count
     context["use_logit_adjust"] = bool(
         baseline_config.get("use_logit_adjust", False)
@@ -478,6 +509,32 @@ def main(allowed_baseline: str | None = None) -> None:
     print(f"  [5] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
     print("=" * 68 + "\n")
 
+    known_class_count = len(dataset.known_class_ids)
+    use_teacher = (
+        arguments.use_momentum_teacher is True
+        or (
+            arguments.use_momentum_teacher is None
+            and bool(baseline_config.get("use_momentum_teacher", False) or detected_config.startswith("Full"))
+        )
+    )
+    teacher = None
+    if use_teacher:
+        from prototail_gcd.training.momentum_teacher import GlobalEMATeacher
+        if baseline_name == "simgcd":
+            teacher = GlobalEMATeacher(model.backbone, model.projector, m0=0.996).to(device)
+        elif baseline_name == "bacon":
+            teacher = GlobalEMATeacher(model.classification_backbone, model.classification_head, m0=0.996).to(device)
+        print(f"[TEACHER] GlobalEMATeacher initialized (m0=0.996, device={device})", flush=True)
+
+    from prototail_gcd.pseudo import PromotionStore, PaperDualSelector
+    store = PromotionStore(dataset.num_classes, known_class_count)
+    selector = PaperDualSelector(
+        n_known=known_class_count,
+        n_classes=dataset.num_classes,
+        seed=seed,
+    )
+    context["promotion_store"] = store
+
     engine = TrainingEngine(
         model=model,
         baseline=baseline,
@@ -488,6 +545,7 @@ def main(allowed_baseline: str | None = None) -> None:
         context=context,
         schedulers=schedulers,
         use_fp16=bool(arguments.fp16 and device.type == "cuda"),
+        teacher=teacher,
     )
 
     output_directory = Path(config["experiment"]["output_dir"])
@@ -513,6 +571,11 @@ def main(allowed_baseline: str | None = None) -> None:
     use_fp16_flag = bool(arguments.fp16 and device.type == "cuda")
     with metrics_path.open("w", encoding="utf-8") as metrics_file:
         for epoch in range(epoch_count):
+            if enable_pseudo and selector.scheduled(epoch):
+                dist_loader = dataset.evaluation_loaders.get("distribution")
+                if dist_loader is not None:
+                    sel_event = selector.run(epoch, model, baseline, dist_loader, device, store)
+                    print(f"[D1/D2 SELECTOR] Epoch {epoch + 1}: Promoted total={len(store)} | Details: {sel_event}", flush=True)
             train_metrics = engine.train_epoch(dataset.train_loader, epoch)
             record: dict[str, Any] = {
                 "baseline": baseline_name,
@@ -609,20 +672,24 @@ def main(allowed_baseline: str | None = None) -> None:
                         print(f"  Active Slots/Class: Known ~ {k_slots:.2f} | Novel ~ {u_slots:.2f}", flush=True)
                 except Exception:
                     pass
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "optimizers": {
-                        name: optimizer.state_dict()
-                        for name, optimizer in optimizers.items()
-                    },
-                    "schedulers": {
-                        name: scheduler.state_dict()
-                        for name, scheduler in schedulers.items()
-                    },
-                    "epoch": epoch + 1,
-                    "config": config,
+            checkpoint_payload = {
+                "model": model.state_dict(),
+                "optimizers": {
+                    name: optimizer.state_dict()
+                    for name, optimizer in optimizers.items()
                 },
+                "schedulers": {
+                    name: scheduler.state_dict()
+                    for name, scheduler in schedulers.items()
+                },
+                "epoch": epoch + 1,
+                "config": config,
+                "promotion_store": store.export_state(),
+            }
+            if teacher is not None:
+                checkpoint_payload["teacher"] = teacher.state_dict()
+            torch.save(
+                checkpoint_payload,
                 checkpoint_path,
             )
 

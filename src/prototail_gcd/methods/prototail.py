@@ -13,7 +13,6 @@ from prototail_gcd.contracts import (
     PredictionOutput,
     TrainingBatch,
 )
-from prototail_gcd.models.dino_backbone import parse_block_index
 
 
 class LatentPartModule(nn.Module):
@@ -315,11 +314,9 @@ class ProtoTailPlugin:
         if capacity_weight > 0 and regularize_gates:
             frequencies = context.get("estimated_frequencies")
             if frequencies is None:
-                frequencies = context.get("class_frequencies")
-            if frequencies is None:
                 raise RuntimeError(
                     "ProtoTail capacity regularization requires "
-                    "estimated_frequencies"
+                    "label-free estimated_frequencies; never use GT class_counts"
                 )
             frequencies = torch.as_tensor(
                 frequencies,
@@ -412,38 +409,15 @@ class ProtoTailPlugin:
         model: Any,
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         components = self._components()
-        backbone = getattr(model, "contrastive_backbone", None)
-        if backbone is None:
-            backbone = getattr(model, "backbone", None)
-        if backbone is None:
-            raise ValueError("ProtoTail model does not expose its backbone")
-        finetune_from_block = int(
-            getattr(model, "finetune_from_block", 11)
-        )
-        self._shared_parameters = tuple(
-            parameter
-            for name, parameter in backbone.named_parameters()
-            if parameter.requires_grad
-            and (
-                (block_index := parse_block_index(name)) is not None
-                and block_index >= finetune_from_block
-            )
-        )
+        # The baseline already owns the fine-tunable backbone parameters.
+        # Its gradient includes BOTH baseline and ProtoTail loss terms.
+        self._shared_parameters = ()
         part_groups: list[Mapping[str, Any]] = [
             {
                 "params": list(components.parts.parameters()),
                 "lr": float(self.config.get("learning_rate", 0.05)),
             }
         ]
-        if self._shared_parameters:
-            part_groups.append(
-                {
-                    "params": list(self._shared_parameters),
-                    "lr": float(
-                        self.config.get("shared_backbone_learning_rate", 0.01)
-                    ),
-                }
-            )
         return {
             "part": part_groups,
             "gate": [
@@ -479,9 +453,6 @@ class ProtoTailPlugin:
         if epoch < prototype_start:
             return
         is_simgcd = "student" in output.branches
-        known_end_epoch = self.config.get("known_prototype_end_epoch")
-        if known_end_epoch is not None and epoch > int(known_end_epoch):
-            return
 
         batch_size = int(batch.sample_ids.numel())
         parts = values["parts"][:batch_size].detach()
@@ -495,6 +466,7 @@ class ProtoTailPlugin:
         momentum = float(self.config.get("prototype_momentum", 0.99))
 
         if torch.any(labeled):
+            # Known EMA continues through the end of training (Appendix B).
             bank.update_known(parts[labeled], labels[labeled], momentum)
 
         unlabeled = ~labeled
@@ -517,11 +489,12 @@ class ProtoTailPlugin:
             pseudo_label_logits / float(self.config.get("temperature", 0.1))
         ).softmax(dim=-1)
         confidence, pseudo_labels = probabilities.max(dim=-1)
-        if torch.any(unlabeled):
+        true_novel = unlabeled & (pseudo_labels >= known_class_count)
+        if torch.any(true_novel):
             bank.update_novel(
-                parts[unlabeled],
-                pseudo_labels[unlabeled],
-                confidence[unlabeled],
+                parts[true_novel],
+                pseudo_labels[true_novel],
+                confidence[true_novel],
                 threshold=float(self.config.get("pseudo_confidence", 0.7)),
                 momentum=momentum,
             )
@@ -543,17 +516,26 @@ class ProtoTailPlugin:
             global_features, torch.Tensor
         ):
             raise TypeError("ProtoTail inference features must be tensors")
-        part_classes = part_scores.argmax(dim=-1)
-        gates = self._components().prototypes.gates()[part_classes]
-        pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
-        pooled_parts = pooled_parts / gates.sum(dim=-1, keepdim=True).clamp_min(
-            1e-6
-        )
-        features = F.normalize(
-            torch.cat((global_features, pooled_parts), dim=-1),
-            dim=-1,
-        )
-        return PredictionOutput(class_ids=None, features=features)
+        mode = str(self.config.get("eval_feature_mode", "legacy_concat"))
+        if mode == "original_parts_concat":
+            # Matches Alo_SimGCD/reeval_aux and S/train.py's normalized concat
+            # at feature-scale level with class-independent mean gate for pooling
+            mean_gates = self._components().prototypes.gates().mean(dim=0)
+            pooled_parts = (parts * mean_gates.unsqueeze(-1)).sum(dim=1)
+            pooled_parts = pooled_parts / mean_gates.sum().clamp_min(1e-6)
+            global_features = F.normalize(global_features, dim=-1)
+            pooled_parts = F.normalize(pooled_parts, dim=-1)
+        elif mode == "legacy_concat":
+            part_classes = part_scores.argmax(dim=-1)
+            gates = self._components().prototypes.gates()[part_classes]
+            pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
+            pooled_parts = pooled_parts / gates.sum(dim=-1, keepdim=True).clamp_min(
+                1e-6
+            )
+        else:
+            raise ValueError(f"Unknown feature mode: {mode}")
+        features = torch.cat((global_features, pooled_parts), dim=-1)
+        return PredictionOutput(class_ids=None, features=F.normalize(features, dim=-1))
 
     def evaluation_diagnostics(
         self,

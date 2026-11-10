@@ -17,6 +17,7 @@ class TrainingBatch:
     known_targets: Any
     labeled_mask: Any
     sample_ids: Any
+    original_labeled_mask: Any = None
 
     def to(self, device: Any) -> "TrainingBatch":
         def move(value: Any) -> Any:
@@ -29,6 +30,11 @@ class TrainingBatch:
             known_targets=move(self.known_targets),
             labeled_mask=move(self.labeled_mask),
             sample_ids=move(self.sample_ids),
+            original_labeled_mask=(
+                move(self.original_labeled_mask)
+                if self.original_labeled_mask is not None
+                else None
+            ),
         )
 
 

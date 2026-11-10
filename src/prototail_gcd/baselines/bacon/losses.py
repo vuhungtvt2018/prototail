@@ -57,6 +57,8 @@ def estimate_class_frequencies(
     finetune_from_block: int,
     random_state: int,
     device: torch.device,
+    known_frequency_mapping: str = "direct_hungarian",
+    novel_frequency_mapping: str = "legacy_rank",
 ) -> torch.Tensor:
     from prototail_gcd.models.dino_backbone import forward_global_and_patches
 
@@ -127,16 +129,25 @@ def estimate_class_frequencies(
         for class_id in range(num_known_classes)
         if class_id in cluster_for_class
     ]
-    labeled_class_counts = np.bincount(
-        all_targets[all_labeled],
-        minlength=num_known_classes,
-    )[:num_known_classes]
     estimate = np.ones(num_classes, dtype=np.float32)
-    known_by_support = np.argsort(labeled_class_counts)
-    known_cluster_counts = np.sort(cluster_counts[known_cluster_ids])
-    if len(known_by_support) != len(known_cluster_counts):
-        raise RuntimeError("known-class frequency alignment is incomplete")
-    estimate[known_by_support] = known_cluster_counts
+    if known_frequency_mapping == "direct_hungarian":
+        if len(known_cluster_ids) != num_known_classes:
+            raise RuntimeError("known-class frequency alignment is incomplete")
+        for class_id in range(num_known_classes):
+            # Preserve the Hungarian class -> cluster assignment.
+            estimate[class_id] = cluster_counts[cluster_for_class[class_id]]
+    elif known_frequency_mapping == "legacy_bacon_rank":
+        labeled_class_counts = np.bincount(
+            all_targets[all_labeled],
+            minlength=num_known_classes,
+        )[:num_known_classes]
+        known_by_support = np.argsort(labeled_class_counts)
+        known_cluster_counts = np.sort(cluster_counts[known_cluster_ids])
+        if len(known_by_support) != len(known_cluster_counts):
+            raise RuntimeError("known-class frequency alignment is incomplete")
+        estimate[known_by_support] = known_cluster_counts
+    else:
+        raise ValueError(f"Unknown known_frequency_mapping: {known_frequency_mapping}")
 
     novel_cluster_ids = sorted(set(range(num_classes)) - set(known_cluster_ids))
     novel_cluster_counts = np.sort(cluster_counts[novel_cluster_ids])[::-1]

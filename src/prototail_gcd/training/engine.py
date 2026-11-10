@@ -33,6 +33,7 @@ class TrainingEngine:
         context: Mapping[str, Any] | None = None,
         schedulers: Mapping[str, Any] | None = None,
         use_fp16: bool = False,
+        teacher: Any | None = None,
     ) -> None:
         if not optimizers:
             raise ValueError("at least one optimizer is required")
@@ -46,20 +47,13 @@ class TrainingEngine:
         self.schedulers = dict(schedulers or {})
         self.use_fp16 = use_fp16
         self.scaler = make_grad_scaler(enabled=use_fp16)
+        self.teacher = teacher if teacher is not None else self.context.get("teacher")
         if set(self.schedulers) - set(self.optimizers):
             raise ValueError("each scheduler must match a named optimizer")
         self._validate_disjoint_optimizers()
 
     def _validate_disjoint_optimizers(self) -> None:
         seen_parameter_ids: set[int] = set()
-        shared_method_parameter_ids = (
-            {
-                id(parameter)
-                for parameter in self.method.shared_parameters()
-            }
-            if self.method is not None
-            else set()
-        )
         for optimizer_name, optimizer in self.optimizers.items():
             current_ids = {
                 id(parameter)
@@ -67,14 +61,7 @@ class TrainingEngine:
                 for parameter in group["params"]
             }
             overlap = seen_parameter_ids & current_ids
-            is_method_part_optimizer = (
-                self.method is not None
-                and optimizer_name == f"{self.method.name}_part"
-            )
-            if overlap and not (
-                is_method_part_optimizer
-                and overlap <= shared_method_parameter_ids
-            ):
+            if overlap:
                 raise ValueError(
                     f"optimizer {optimizer_name!r} shares parameters with "
                     "another optimizer"
@@ -87,16 +74,56 @@ class TrainingEngine:
         epoch: int,
     ) -> dict[str, float]:
         device = next(self.model.parameters()).device
+        store = self.context.get("promotion_store")
+        if store is not None and len(store) > 0:
+            sids = batch.sample_ids.cpu().numpy().tolist()
+            promoted_lookup = store.lookup(sids)
+            if promoted_lookup:
+                new_targets = batch.known_targets.clone()
+                new_mask = batch.labeled_mask.clone()
+                orig_mask = (
+                    batch.original_labeled_mask.clone()
+                    if batch.original_labeled_mask is not None
+                    else batch.labeled_mask.clone()
+                )
+                for idx, sid in enumerate(sids):
+                    if not orig_mask[idx] and sid in promoted_lookup:
+                        new_targets[idx] = promoted_lookup[sid]
+                        new_mask[idx] = True
+                batch = TrainingBatch(
+                    views=batch.views,
+                    known_targets=new_targets,
+                    labeled_mask=new_mask,
+                    sample_ids=batch.sample_ids,
+                    original_labeled_mask=orig_mask,
+                )
+
         batch = batch.to(device)
         self.model.train()
         for optimizer in self.optimizers.values():
             optimizer.zero_grad(set_to_none=True)
 
+        step_context = {**self.context, "epoch": epoch}
+        if self.teacher is not None:
+            with torch.no_grad(), autocast_cuda(enabled=self.use_fp16 and device.type == "cuda"):
+                images = torch.cat(tuple(batch.views), dim=0)
+                ft_block = int(getattr(self.model, "finetune_from_block", 0))
+
+                def forward_features(bb: Any, imgs: torch.Tensor) -> torch.Tensor:
+                    if hasattr(bb, "prepare_tokens"):
+                        from prototail_gcd.models.dino_backbone import forward_global_and_patches
+                        feats, _ = forward_global_and_patches(bb, imgs, finetune_from_block=ft_block)
+                        return feats
+                    return bb(imgs)
+
+                step_context["teacher_logits"] = self.teacher.forward(
+                    images, forward_features=forward_features
+                )
+
         with autocast_cuda(enabled=self.use_fp16 and device.type == "cuda"):
             output = self.baseline.forward(self.model, batch)
             if self.method is not None:
                 output = self.method.augment_output(output)
-            step_context = {**self.context, "epoch": epoch}
             losses = self.baseline.compute_losses(
                 output,
                 batch,
@@ -156,6 +183,23 @@ class TrainingEngine:
             total_loss.backward()
             for optimizer in self.optimizers.values():
                 optimizer.step()
+
+        if self.teacher is not None:
+            total_epochs = int(self.context.get("total_epochs", 200))
+            if hasattr(self.model, "backbone") and hasattr(self.model, "projector"):
+                self.teacher.update(
+                    self.model.backbone,
+                    self.model.projector,
+                    epoch=epoch,
+                    total_epochs=total_epochs,
+                )
+            elif hasattr(self.model, "classification_backbone") and hasattr(self.model, "classification_head"):
+                self.teacher.update(
+                    self.model.classification_backbone,
+                    self.model.classification_head,
+                    epoch=epoch,
+                    total_epochs=total_epochs,
+                )
         after_step = getattr(self.baseline, "after_optimizer_step", None)
         if after_step is not None:
             after_step(
