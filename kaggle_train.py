@@ -115,7 +115,9 @@ def _prepare_gcd_dataset(
     cand_names = {
         "cub": ["cub", "CUB_200_2011", "cub200"],
         "cars": ["car", "cars", "stanford_cars", "scars"],
+        "car": ["car", "cars", "stanford_cars", "scars"],
         "aircraft": ["aircraft", "fgvc_aircraft", "fgvc-aircraft-2013b"],
+        "air": ["aircraft", "fgvc_aircraft", "fgvc-aircraft-2013b"],
         "herbarium": ["Herbarium 19", "herbarium", "herbarium19", "herb19"],
         "herbarium19": ["Herbarium 19", "herbarium", "herbarium19", "herb19"],
         "inat2018": ["iNaturalist 2018", "inat2018", "inat", "inaturalist"],
@@ -196,12 +198,14 @@ def _prepare_gcd_dataset(
     # 6. Resolve splits_root
     if norm in ("cub", "cub200"):
         pattern = f"cub200_k100_imb{imb_ratio}"
-    elif norm in ("cars", "stanford_cars", "scars"):
+    elif norm in ("cars", "stanford_cars", "scars", "car"):
         pattern = f"cars196_k98_imb{imb_ratio}"
-    elif norm in ("aircraft", "fgvc_aircraft"):
+    elif norm in ("aircraft", "fgvc_aircraft", "air"):
         pattern = f"aircraft_k80_imb{imb_ratio}"
     elif norm in ("herbarium", "herbarium19", "herb19"):
         pattern = f"herbarium19_k341_imb{imb_ratio}"
+    elif norm in ("inat", "inat2018", "inaturalist", "inaturalist2018"):
+        pattern = "inat2018_k4071_natural" if str(imb_ratio).lower() == "natural" else f"inat2018_k4071_imb{imb_ratio}"
     else:
         pattern = f"*_imb{imb_ratio}"
 

@@ -119,7 +119,7 @@ def _build_code_bundle_b64(repo_root: Path, target_dataset: str = "", target_imb
                 if prefixes and not any(cname.startswith(p) for p in prefixes):
                     continue
                 if target_imb and ("inat" in cname or "herbarium" in cname):
-                    imb_tag = f"imb{target_imb}"
+                    imb_tag = "natural" if str(target_imb).lower() == "natural" else f"imb{target_imb}"
                     if imb_tag not in cname:
                         continue
                 for root, dirs, files in os.walk(child):
