@@ -1,11 +1,11 @@
-# MODAL RUN GUIDE — 108 CẤU HÌNH (TẮT MÁY ĐI NGỦ VẪN CHẠY)
+# MODAL RUN GUIDE — TOÀN BỘ CẤU HÌNH (MODAL CLOUD GPU — TẮT MÁY ĐI NGỦ)
 
-> **Ý nghĩa của cú pháp `modal_train.py::launch`**:
-> - `::launch` là tên hàm entrypoint (`def launch(...)`) được định nghĩa trong file `modal_train.py`.
-> - Khi gọi `modal run -d modal_train.py::launch`, Modal sẽ gọi hàm này ở chế độ **Fire-and-forget** (`-d` / `--detach`).
-> - Hàm `launch` sẽ submit job lên GPU Cloud (A10G/A100/H200) rồi ngắt kết nối ngay lập tức.
-> - Bạn có thể **tắt terminal, tắt máy tính đi ngủ**, mô hình vẫn chạy độc lập trên Modal Cloud.
-> - Kiểm tra trạng thái: `modal app list` hoặc xem log: `modal app logs bacon-train`.
+> **CẬP NHẬT CẤU HÌNH FIX V4 CHUẨN KAGGLE (TỰ ĐỘNG)**:
+> - **Entrypoint**: `modal run -d modal_train.py::launch ...`
+> - **KMeans Backend**: Mặc định `sklearn_cpu` (k-means++ chuẩn).
+> - **Tail-Aware Warm-Start**: Tự động bật Epoch 0 cho cấu hình `Prototype_Tailaware` và `Full`.
+> - **Fire-and-forget (`-d` / `--detach`)**: Job chạy trên GPU Cloud (A10G/A100) độc lập, bạn có thể **tắt máy đi ngủ** ngay lập tức.
+> - **Kiểm tra tiến độ**: `modal app list` hoặc `modal app logs prototail-train`.
 
 ---
 
@@ -13,594 +13,1050 @@
 # MÔ HÌNH: SIMGCD
 # ===========================================================================
 
-## Dataset: CUB (cub)
+## Dataset: CUB (`cub`)
 
 ### Imbalance Ratio: imb20
 
 #### simgcd_cub_Base_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_cub_Base_imb20
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 20 --config Base
 ```
 
 #### simgcd_cub_Pseudo_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_cub_Pseudo_imb20 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 20 --config Pseudo
 ```
 
 #### simgcd_cub_Prototype_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_cub_Prototype_imb20 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 20 --config Prototype
 ```
 
 #### simgcd_cub_Prototype_Tailaware_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_cub_Prototype_Tailaware_imb20 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 20 --config Prototype_Tailaware
 ```
 
 #### simgcd_cub_Full_wo_Tail_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_cub_Full_wo_Tail_imb20 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 20 --config Full_wo_Tail
 ```
 
 #### simgcd_cub_Full_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_cub_Full_imb20 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 20 --config Full
 ```
 
 ### Imbalance Ratio: imb50
 
 #### simgcd_cub_Base_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_cub_Base_imb50
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 50 --config Base
 ```
 
 #### simgcd_cub_Pseudo_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_cub_Pseudo_imb50 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 50 --config Pseudo
 ```
 
 #### simgcd_cub_Prototype_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_cub_Prototype_imb50 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 50 --config Prototype
 ```
 
 #### simgcd_cub_Prototype_Tailaware_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_cub_Prototype_Tailaware_imb50 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 50 --config Prototype_Tailaware
 ```
 
 #### simgcd_cub_Full_wo_Tail_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_cub_Full_wo_Tail_imb50 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 50 --config Full_wo_Tail
 ```
 
 #### simgcd_cub_Full_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_cub_Full_imb50 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 50 --config Full
 ```
 
 ### Imbalance Ratio: imb100
 
 #### simgcd_cub_Base_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_cub_Base_imb100
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 100 --config Base
 ```
 
 #### simgcd_cub_Pseudo_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_cub_Pseudo_imb100 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 100 --config Pseudo
 ```
 
 #### simgcd_cub_Prototype_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_cub_Prototype_imb100 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 100 --config Prototype
 ```
 
 #### simgcd_cub_Prototype_Tailaware_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_cub_Prototype_Tailaware_imb100 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 100 --config Prototype_Tailaware
 ```
 
 #### simgcd_cub_Full_wo_Tail_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_cub_Full_wo_Tail_imb100 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 100 --config Full_wo_Tail
 ```
 
 #### simgcd_cub_Full_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name cub --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_cub_Full_imb100 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cub --imb-ratio 100 --config Full
 ```
 
-## Dataset: CAR (scars)
+## Dataset: CARS (`cars`)
 
 ### Imbalance Ratio: imb20
 
-#### simgcd_car_Base_imb20
+#### simgcd_cars_Base_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_car_Base_imb20
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 20 --config Base
 ```
 
-#### simgcd_car_Pseudo_imb20
+#### simgcd_cars_Pseudo_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_car_Pseudo_imb20 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 20 --config Pseudo
 ```
 
-#### simgcd_car_Prototype_imb20
+#### simgcd_cars_Prototype_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_car_Prototype_imb20 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 20 --config Prototype
 ```
 
-#### simgcd_car_Prototype_Tailaware_imb20
+#### simgcd_cars_Prototype_Tailaware_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_car_Prototype_Tailaware_imb20 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 20 --config Prototype_Tailaware
 ```
 
-#### simgcd_car_Full_wo_Tail_imb20
+#### simgcd_cars_Full_wo_Tail_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_car_Full_wo_Tail_imb20 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 20 --config Full_wo_Tail
 ```
 
-#### simgcd_car_Full_imb20
+#### simgcd_cars_Full_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_car_Full_imb20 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 20 --config Full
 ```
 
 ### Imbalance Ratio: imb50
 
-#### simgcd_car_Base_imb50
+#### simgcd_cars_Base_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_car_Base_imb50
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 50 --config Base
 ```
 
-#### simgcd_car_Pseudo_imb50
+#### simgcd_cars_Pseudo_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_car_Pseudo_imb50 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 50 --config Pseudo
 ```
 
-#### simgcd_car_Prototype_imb50
+#### simgcd_cars_Prototype_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_car_Prototype_imb50 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 50 --config Prototype
 ```
 
-#### simgcd_car_Prototype_Tailaware_imb50
+#### simgcd_cars_Prototype_Tailaware_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_car_Prototype_Tailaware_imb50 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 50 --config Prototype_Tailaware
 ```
 
-#### simgcd_car_Full_wo_Tail_imb50
+#### simgcd_cars_Full_wo_Tail_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_car_Full_wo_Tail_imb50 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 50 --config Full_wo_Tail
 ```
 
-#### simgcd_car_Full_imb50
+#### simgcd_cars_Full_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_car_Full_imb50 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 50 --config Full
 ```
 
 ### Imbalance Ratio: imb100
 
-#### simgcd_car_Base_imb100
+#### simgcd_cars_Base_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_car_Base_imb100
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 100 --config Base
 ```
 
-#### simgcd_car_Pseudo_imb100
+#### simgcd_cars_Pseudo_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_car_Pseudo_imb100 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 100 --config Pseudo
 ```
 
-#### simgcd_car_Prototype_imb100
+#### simgcd_cars_Prototype_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_car_Prototype_imb100 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 100 --config Prototype
 ```
 
-#### simgcd_car_Prototype_Tailaware_imb100
+#### simgcd_cars_Prototype_Tailaware_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_car_Prototype_Tailaware_imb100 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 100 --config Prototype_Tailaware
 ```
 
-#### simgcd_car_Full_wo_Tail_imb100
+#### simgcd_cars_Full_wo_Tail_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_car_Full_wo_Tail_imb100 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 100 --config Full_wo_Tail
 ```
 
-#### simgcd_car_Full_imb100
+#### simgcd_cars_Full_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name scars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_car_Full_imb100 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name cars --imb-ratio 100 --config Full
 ```
 
-## Dataset: AIR (aircraft)
+## Dataset: AIRCRAFT (`aircraft`)
 
 ### Imbalance Ratio: imb20
 
-#### simgcd_air_Base_imb20
+#### simgcd_aircraft_Base_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_air_Base_imb20
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 20 --config Base
 ```
 
-#### simgcd_air_Pseudo_imb20
+#### simgcd_aircraft_Pseudo_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_air_Pseudo_imb20 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 20 --config Pseudo
 ```
 
-#### simgcd_air_Prototype_imb20
+#### simgcd_aircraft_Prototype_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_air_Prototype_imb20 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 20 --config Prototype
 ```
 
-#### simgcd_air_Prototype_Tailaware_imb20
+#### simgcd_aircraft_Prototype_Tailaware_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_air_Prototype_Tailaware_imb20 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 20 --config Prototype_Tailaware
 ```
 
-#### simgcd_air_Full_wo_Tail_imb20
+#### simgcd_aircraft_Full_wo_Tail_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_air_Full_wo_Tail_imb20 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 20 --config Full_wo_Tail
 ```
 
-#### simgcd_air_Full_imb20
+#### simgcd_aircraft_Full_imb20
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix simgcd_air_Full_imb20 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 20 --config Full
 ```
 
 ### Imbalance Ratio: imb50
 
-#### simgcd_air_Base_imb50
+#### simgcd_aircraft_Base_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_air_Base_imb50
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 50 --config Base
 ```
 
-#### simgcd_air_Pseudo_imb50
+#### simgcd_aircraft_Pseudo_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_air_Pseudo_imb50 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 50 --config Pseudo
 ```
 
-#### simgcd_air_Prototype_imb50
+#### simgcd_aircraft_Prototype_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_air_Prototype_imb50 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 50 --config Prototype
 ```
 
-#### simgcd_air_Prototype_Tailaware_imb50
+#### simgcd_aircraft_Prototype_Tailaware_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_air_Prototype_Tailaware_imb50 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 50 --config Prototype_Tailaware
 ```
 
-#### simgcd_air_Full_wo_Tail_imb50
+#### simgcd_aircraft_Full_wo_Tail_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_air_Full_wo_Tail_imb50 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 50 --config Full_wo_Tail
 ```
 
-#### simgcd_air_Full_imb50
+#### simgcd_aircraft_Full_imb50
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix simgcd_air_Full_imb50 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 50 --config Full
 ```
 
 ### Imbalance Ratio: imb100
 
-#### simgcd_air_Base_imb100
+#### simgcd_aircraft_Base_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_air_Base_imb100
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 100 --config Base
 ```
 
-#### simgcd_air_Pseudo_imb100
+#### simgcd_aircraft_Pseudo_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_air_Pseudo_imb100 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 100 --config Pseudo
 ```
 
-#### simgcd_air_Prototype_imb100
+#### simgcd_aircraft_Prototype_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_air_Prototype_imb100 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 100 --config Prototype
 ```
 
-#### simgcd_air_Prototype_Tailaware_imb100
+#### simgcd_aircraft_Prototype_Tailaware_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_air_Prototype_Tailaware_imb100 --use-parts
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 100 --config Prototype_Tailaware
 ```
 
-#### simgcd_air_Full_wo_Tail_imb100
+#### simgcd_aircraft_Full_wo_Tail_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_air_Full_wo_Tail_imb100 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 100 --config Full_wo_Tail
 ```
 
-#### simgcd_air_Full_imb100
+#### simgcd_aircraft_Full_imb100
 ```bash
-modal run -d modal_train_simgcd.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix simgcd_air_Full_imb100 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name aircraft --imb-ratio 100 --config Full
+```
+
+## Dataset: HERBARIUM 19 (`herb19`)
+
+### Imbalance Ratio: imb20
+
+#### simgcd_herb19_Base_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 20 --config Base
+```
+
+#### simgcd_herb19_Pseudo_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 20 --config Pseudo
+```
+
+#### simgcd_herb19_Prototype_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 20 --config Prototype
+```
+
+#### simgcd_herb19_Prototype_Tailaware_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 20 --config Prototype_Tailaware
+```
+
+#### simgcd_herb19_Full_wo_Tail_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 20 --config Full_wo_Tail
+```
+
+#### simgcd_herb19_Full_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 20 --config Full
+```
+
+### Imbalance Ratio: imb50
+
+#### simgcd_herb19_Base_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 50 --config Base
+```
+
+#### simgcd_herb19_Pseudo_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 50 --config Pseudo
+```
+
+#### simgcd_herb19_Prototype_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 50 --config Prototype
+```
+
+#### simgcd_herb19_Prototype_Tailaware_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 50 --config Prototype_Tailaware
+```
+
+#### simgcd_herb19_Full_wo_Tail_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 50 --config Full_wo_Tail
+```
+
+#### simgcd_herb19_Full_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 50 --config Full
+```
+
+### Imbalance Ratio: imb100
+
+#### simgcd_herb19_Base_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 100 --config Base
+```
+
+#### simgcd_herb19_Pseudo_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 100 --config Pseudo
+```
+
+#### simgcd_herb19_Prototype_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 100 --config Prototype
+```
+
+#### simgcd_herb19_Prototype_Tailaware_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 100 --config Prototype_Tailaware
+```
+
+#### simgcd_herb19_Full_wo_Tail_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 100 --config Full_wo_Tail
+```
+
+#### simgcd_herb19_Full_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name herb19 --imb-ratio 100 --config Full
+```
+
+## Dataset: INATURALIST 2018 (`inat2018`)
+
+### Imbalance Ratio: imb20
+
+#### simgcd_inat2018_Base_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Base
+```
+
+#### simgcd_inat2018_Pseudo_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Pseudo
+```
+
+#### simgcd_inat2018_Prototype_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Prototype
+```
+
+#### simgcd_inat2018_Prototype_Tailaware_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Prototype_Tailaware
+```
+
+#### simgcd_inat2018_Full_wo_Tail_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Full_wo_Tail
+```
+
+#### simgcd_inat2018_Full_imb20
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Full
+```
+
+### Imbalance Ratio: imb50
+
+#### simgcd_inat2018_Base_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Base
+```
+
+#### simgcd_inat2018_Pseudo_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Pseudo
+```
+
+#### simgcd_inat2018_Prototype_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Prototype
+```
+
+#### simgcd_inat2018_Prototype_Tailaware_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Prototype_Tailaware
+```
+
+#### simgcd_inat2018_Full_wo_Tail_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Full_wo_Tail
+```
+
+#### simgcd_inat2018_Full_imb50
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Full
+```
+
+### Imbalance Ratio: imb100
+
+#### simgcd_inat2018_Base_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Base
+```
+
+#### simgcd_inat2018_Pseudo_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Pseudo
+```
+
+#### simgcd_inat2018_Prototype_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Prototype
+```
+
+#### simgcd_inat2018_Prototype_Tailaware_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Prototype_Tailaware
+```
+
+#### simgcd_inat2018_Full_wo_Tail_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Full_wo_Tail
+```
+
+#### simgcd_inat2018_Full_imb100
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Full
+```
+
+### Imbalance Ratio: natural
+
+#### simgcd_inat2018_Base_natural
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Base
+```
+
+#### simgcd_inat2018_Pseudo_natural
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Pseudo
+```
+
+#### simgcd_inat2018_Prototype_natural
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Prototype
+```
+
+#### simgcd_inat2018_Prototype_Tailaware_natural
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Prototype_Tailaware
+```
+
+#### simgcd_inat2018_Full_wo_Tail_natural
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Full_wo_Tail
+```
+
+#### simgcd_inat2018_Full_natural
+```bash
+modal run -d modal_train.py::launch --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Full
 ```
 
 # ===========================================================================
 # MÔ HÌNH: BACON
 # ===========================================================================
 
-## Dataset: CUB (cub200)
+## Dataset: CUB (`cub`)
 
 ### Imbalance Ratio: imb20
 
 #### bacon_cub_Base_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_cub_Base_imb20
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 20 --config Base
 ```
 
 #### bacon_cub_Pseudo_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_cub_Pseudo_imb20 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 20 --config Pseudo
 ```
 
 #### bacon_cub_Prototype_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_cub_Prototype_imb20 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 20 --config Prototype
 ```
 
 #### bacon_cub_Prototype_Tailaware_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_cub_Prototype_Tailaware_imb20 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 20 --config Prototype_Tailaware
 ```
 
 #### bacon_cub_Full_wo_Tail_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_cub_Full_wo_Tail_imb20 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 20 --config Full_wo_Tail
 ```
 
 #### bacon_cub_Full_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_cub_Full_imb20 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 20 --config Full
 ```
 
 ### Imbalance Ratio: imb50
 
 #### bacon_cub_Base_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_cub_Base_imb50
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 50 --config Base
 ```
 
 #### bacon_cub_Pseudo_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_cub_Pseudo_imb50 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 50 --config Pseudo
 ```
 
 #### bacon_cub_Prototype_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_cub_Prototype_imb50 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 50 --config Prototype
 ```
 
 #### bacon_cub_Prototype_Tailaware_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_cub_Prototype_Tailaware_imb50 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 50 --config Prototype_Tailaware
 ```
 
 #### bacon_cub_Full_wo_Tail_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_cub_Full_wo_Tail_imb50 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 50 --config Full_wo_Tail
 ```
 
 #### bacon_cub_Full_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_cub_Full_imb50 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 50 --config Full
 ```
 
 ### Imbalance Ratio: imb100
 
 #### bacon_cub_Base_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_cub_Base_imb100
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 100 --config Base
 ```
 
 #### bacon_cub_Pseudo_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_cub_Pseudo_imb100 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 100 --config Pseudo
 ```
 
 #### bacon_cub_Prototype_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_cub_Prototype_imb100 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 100 --config Prototype
 ```
 
 #### bacon_cub_Prototype_Tailaware_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_cub_Prototype_Tailaware_imb100 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 100 --config Prototype_Tailaware
 ```
 
 #### bacon_cub_Full_wo_Tail_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_cub_Full_wo_Tail_imb100 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 100 --config Full_wo_Tail
 ```
 
 #### bacon_cub_Full_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name cub200 --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_cub_Full_imb100 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cub --imb-ratio 100 --config Full
 ```
 
-## Dataset: CAR (stanford_cars)
+## Dataset: CARS (`cars`)
 
 ### Imbalance Ratio: imb20
 
-#### bacon_car_Base_imb20
+#### bacon_cars_Base_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_car_Base_imb20
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 20 --config Base
 ```
 
-#### bacon_car_Pseudo_imb20
+#### bacon_cars_Pseudo_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_car_Pseudo_imb20 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 20 --config Pseudo
 ```
 
-#### bacon_car_Prototype_imb20
+#### bacon_cars_Prototype_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_car_Prototype_imb20 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 20 --config Prototype
 ```
 
-#### bacon_car_Prototype_Tailaware_imb20
+#### bacon_cars_Prototype_Tailaware_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_car_Prototype_Tailaware_imb20 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 20 --config Prototype_Tailaware
 ```
 
-#### bacon_car_Full_wo_Tail_imb20
+#### bacon_cars_Full_wo_Tail_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_car_Full_wo_Tail_imb20 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 20 --config Full_wo_Tail
 ```
 
-#### bacon_car_Full_imb20
+#### bacon_cars_Full_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_car_Full_imb20 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 20 --config Full
 ```
 
 ### Imbalance Ratio: imb50
 
-#### bacon_car_Base_imb50
+#### bacon_cars_Base_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_car_Base_imb50
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 50 --config Base
 ```
 
-#### bacon_car_Pseudo_imb50
+#### bacon_cars_Pseudo_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_car_Pseudo_imb50 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 50 --config Pseudo
 ```
 
-#### bacon_car_Prototype_imb50
+#### bacon_cars_Prototype_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_car_Prototype_imb50 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 50 --config Prototype
 ```
 
-#### bacon_car_Prototype_Tailaware_imb50
+#### bacon_cars_Prototype_Tailaware_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_car_Prototype_Tailaware_imb50 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 50 --config Prototype_Tailaware
 ```
 
-#### bacon_car_Full_wo_Tail_imb50
+#### bacon_cars_Full_wo_Tail_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_car_Full_wo_Tail_imb50 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 50 --config Full_wo_Tail
 ```
 
-#### bacon_car_Full_imb50
+#### bacon_cars_Full_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_car_Full_imb50 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 50 --config Full
 ```
 
 ### Imbalance Ratio: imb100
 
-#### bacon_car_Base_imb100
+#### bacon_cars_Base_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_car_Base_imb100
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 100 --config Base
 ```
 
-#### bacon_car_Pseudo_imb100
+#### bacon_cars_Pseudo_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_car_Pseudo_imb100 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 100 --config Pseudo
 ```
 
-#### bacon_car_Prototype_imb100
+#### bacon_cars_Prototype_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_car_Prototype_imb100 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 100 --config Prototype
 ```
 
-#### bacon_car_Prototype_Tailaware_imb100
+#### bacon_cars_Prototype_Tailaware_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_car_Prototype_Tailaware_imb100 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 100 --config Prototype_Tailaware
 ```
 
-#### bacon_car_Full_wo_Tail_imb100
+#### bacon_cars_Full_wo_Tail_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_car_Full_wo_Tail_imb100 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 100 --config Full_wo_Tail
 ```
 
-#### bacon_car_Full_imb100
+#### bacon_cars_Full_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name stanford_cars --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_car_Full_imb100 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name cars --imb-ratio 100 --config Full
 ```
 
-## Dataset: AIR (aircraft)
+## Dataset: AIRCRAFT (`aircraft`)
 
 ### Imbalance Ratio: imb20
 
-#### bacon_air_Base_imb20
+#### bacon_aircraft_Base_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_air_Base_imb20
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 20 --config Base
 ```
 
-#### bacon_air_Pseudo_imb20
+#### bacon_aircraft_Pseudo_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_air_Pseudo_imb20 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 20 --config Pseudo
 ```
 
-#### bacon_air_Prototype_imb20
+#### bacon_aircraft_Prototype_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_air_Prototype_imb20 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 20 --config Prototype
 ```
 
-#### bacon_air_Prototype_Tailaware_imb20
+#### bacon_aircraft_Prototype_Tailaware_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_air_Prototype_Tailaware_imb20 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 20 --config Prototype_Tailaware
 ```
 
-#### bacon_air_Full_wo_Tail_imb20
+#### bacon_aircraft_Full_wo_Tail_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_air_Full_wo_Tail_imb20 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 20 --config Full_wo_Tail
 ```
 
-#### bacon_air_Full_imb20
+#### bacon_aircraft_Full_imb20
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 20 --exp-name-suffix bacon_air_Full_imb20 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 20 --config Full
 ```
 
 ### Imbalance Ratio: imb50
 
-#### bacon_air_Base_imb50
+#### bacon_aircraft_Base_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_air_Base_imb50
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 50 --config Base
 ```
 
-#### bacon_air_Pseudo_imb50
+#### bacon_aircraft_Pseudo_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_air_Pseudo_imb50 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 50 --config Pseudo
 ```
 
-#### bacon_air_Prototype_imb50
+#### bacon_aircraft_Prototype_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_air_Prototype_imb50 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 50 --config Prototype
 ```
 
-#### bacon_air_Prototype_Tailaware_imb50
+#### bacon_aircraft_Prototype_Tailaware_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_air_Prototype_Tailaware_imb50 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 50 --config Prototype_Tailaware
 ```
 
-#### bacon_air_Full_wo_Tail_imb50
+#### bacon_aircraft_Full_wo_Tail_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_air_Full_wo_Tail_imb50 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 50 --config Full_wo_Tail
 ```
 
-#### bacon_air_Full_imb50
+#### bacon_aircraft_Full_imb50
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 50 --exp-name-suffix bacon_air_Full_imb50 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 50 --config Full
 ```
 
 ### Imbalance Ratio: imb100
 
-#### bacon_air_Base_imb100
+#### bacon_aircraft_Base_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_air_Base_imb100
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 100 --config Base
 ```
 
-#### bacon_air_Pseudo_imb100
+#### bacon_aircraft_Pseudo_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_air_Pseudo_imb100 --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 100 --config Pseudo
 ```
 
-#### bacon_air_Prototype_imb100
+#### bacon_aircraft_Prototype_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_air_Prototype_imb100 --use-parts --ablate-adaptive-capacity
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 100 --config Prototype
 ```
 
-#### bacon_air_Prototype_Tailaware_imb100
+#### bacon_aircraft_Prototype_Tailaware_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_air_Prototype_Tailaware_imb100 --use-parts
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 100 --config Prototype_Tailaware
 ```
 
-#### bacon_air_Full_wo_Tail_imb100
+#### bacon_aircraft_Full_wo_Tail_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_air_Full_wo_Tail_imb100 --use-parts --ablate-adaptive-capacity --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 100 --config Full_wo_Tail
 ```
 
-#### bacon_air_Full_imb100
+#### bacon_aircraft_Full_imb100
 ```bash
-modal run -d modal_train.py::launch --dataset-name aircraft --backbone dinov2-vitb14 --imb-ratio 100 --exp-name-suffix bacon_air_Full_imb100 --use-parts --enable-pseudo-labeling --enable-novel-pseudo
+modal run -d modal_train.py::launch --baseline bacon --dataset-name aircraft --imb-ratio 100 --config Full
+```
+
+## Dataset: HERBARIUM 19 (`herb19`)
+
+### Imbalance Ratio: imb20
+
+#### bacon_herb19_Base_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 20 --config Base
+```
+
+#### bacon_herb19_Pseudo_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 20 --config Pseudo
+```
+
+#### bacon_herb19_Prototype_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 20 --config Prototype
+```
+
+#### bacon_herb19_Prototype_Tailaware_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 20 --config Prototype_Tailaware
+```
+
+#### bacon_herb19_Full_wo_Tail_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 20 --config Full_wo_Tail
+```
+
+#### bacon_herb19_Full_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 20 --config Full
+```
+
+### Imbalance Ratio: imb50
+
+#### bacon_herb19_Base_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 50 --config Base
+```
+
+#### bacon_herb19_Pseudo_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 50 --config Pseudo
+```
+
+#### bacon_herb19_Prototype_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 50 --config Prototype
+```
+
+#### bacon_herb19_Prototype_Tailaware_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 50 --config Prototype_Tailaware
+```
+
+#### bacon_herb19_Full_wo_Tail_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 50 --config Full_wo_Tail
+```
+
+#### bacon_herb19_Full_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 50 --config Full
+```
+
+### Imbalance Ratio: imb100
+
+#### bacon_herb19_Base_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 100 --config Base
+```
+
+#### bacon_herb19_Pseudo_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 100 --config Pseudo
+```
+
+#### bacon_herb19_Prototype_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 100 --config Prototype
+```
+
+#### bacon_herb19_Prototype_Tailaware_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 100 --config Prototype_Tailaware
+```
+
+#### bacon_herb19_Full_wo_Tail_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 100 --config Full_wo_Tail
+```
+
+#### bacon_herb19_Full_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name herb19 --imb-ratio 100 --config Full
+```
+
+## Dataset: INATURALIST 2018 (`inat2018`)
+
+### Imbalance Ratio: imb20
+
+#### bacon_inat2018_Base_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Base
+```
+
+#### bacon_inat2018_Pseudo_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Pseudo
+```
+
+#### bacon_inat2018_Prototype_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Prototype
+```
+
+#### bacon_inat2018_Prototype_Tailaware_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Prototype_Tailaware
+```
+
+#### bacon_inat2018_Full_wo_Tail_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Full_wo_Tail
+```
+
+#### bacon_inat2018_Full_imb20
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Full
+```
+
+### Imbalance Ratio: imb50
+
+#### bacon_inat2018_Base_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Base
+```
+
+#### bacon_inat2018_Pseudo_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Pseudo
+```
+
+#### bacon_inat2018_Prototype_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Prototype
+```
+
+#### bacon_inat2018_Prototype_Tailaware_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Prototype_Tailaware
+```
+
+#### bacon_inat2018_Full_wo_Tail_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Full_wo_Tail
+```
+
+#### bacon_inat2018_Full_imb50
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Full
+```
+
+### Imbalance Ratio: imb100
+
+#### bacon_inat2018_Base_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Base
+```
+
+#### bacon_inat2018_Pseudo_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Pseudo
+```
+
+#### bacon_inat2018_Prototype_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Prototype
+```
+
+#### bacon_inat2018_Prototype_Tailaware_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Prototype_Tailaware
+```
+
+#### bacon_inat2018_Full_wo_Tail_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Full_wo_Tail
+```
+
+#### bacon_inat2018_Full_imb100
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Full
+```
+
+### Imbalance Ratio: natural
+
+#### bacon_inat2018_Base_natural
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Base
+```
+
+#### bacon_inat2018_Pseudo_natural
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Pseudo
+```
+
+#### bacon_inat2018_Prototype_natural
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Prototype
+```
+
+#### bacon_inat2018_Prototype_Tailaware_natural
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Prototype_Tailaware
+```
+
+#### bacon_inat2018_Full_wo_Tail_natural
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Full_wo_Tail
+```
+
+#### bacon_inat2018_Full_natural
+```bash
+modal run -d modal_train.py::launch --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Full
 ```

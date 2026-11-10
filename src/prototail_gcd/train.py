@@ -256,7 +256,7 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument("--num-workers", type=int, help="Override dataloader num_workers")
     parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True, help="Enable/disable FP16 AMP")
     parser.add_argument("--imb-ratio", "--imb_ratio", dest="imb_ratio", type=int, help="Override imbalance ratio")
-    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cars", "aircraft"], default=None, help="Dataset name: cub, cars, aircraft")
+    parser.add_argument("--dataset-name", "--dataset_name", dest="dataset_name", choices=["cub", "cub200", "cars", "car", "scars", "aircraft", "air", "fgvc_aircraft", "herbarium", "herbarium19", "herb19", "inat", "inat2018", "inaturalist", "inaturalist2018"], default=None, help="Dataset name: cub, cars, aircraft, herbarium19, inat2018")
     parser.add_argument(
         "--simgcd-eval-head",
         choices=["kmeans", "parametric"],
@@ -384,10 +384,14 @@ def main(allowed_baseline: str | None = None) -> None:
 
     if dataset_name in ("cub", "cub200"):
         config["data"]["protocol"]["known_class_count"] = 100
-    elif dataset_name in ("cars", "stanford_cars", "scars"):
+    elif dataset_name in ("cars", "stanford_cars", "scars", "car"):
         config["data"]["protocol"]["known_class_count"] = 98
-    elif dataset_name in ("aircraft", "fgvc_aircraft"):
+    elif dataset_name in ("aircraft", "fgvc_aircraft", "air"):
         config["data"]["protocol"]["known_class_count"] = 80
+    elif dataset_name in ("herbarium19", "herb19", "herbarium"):
+        config["data"]["protocol"]["known_class_count"] = 341
+    elif dataset_name in ("inat2018", "inat", "inaturalist", "inaturalist2018"):
+        config["data"]["protocol"]["known_class_count"] = 4071
 
     if arguments.imb_ratio is not None:
         config["data"]["protocol"]["imbalance_ratio"] = int(arguments.imb_ratio)
