@@ -434,137 +434,41 @@ python kaggle_push.py --baseline simgcd --dataset-name herb19 --imb-ratio 100 --
 
 ## Dataset: INATURALIST 2018 (`inat2018`)
 
-### Imbalance Ratio: imb20
-
-#### simgcd_inat2018_Base_imb20
+#### simgcd_inat2018_Base
 ```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Base
+python kaggle_push.py --baseline simgcd --dataset-name inat2018 --config Base
 ```
 
-#### simgcd_inat2018_Pseudo_imb20
+#### simgcd_inat2018_Pseudo
 ```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Pseudo
+python kaggle_push.py --baseline simgcd --dataset-name inat2018 --config Pseudo
 ```
 
-#### simgcd_inat2018_Prototype_imb20
+#### simgcd_inat2018_Prototype
 ```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Prototype
+python kaggle_push.py --baseline simgcd --dataset-name inat2018 --config Prototype
 ```
 
-#### simgcd_inat2018_Prototype_Tailaware_imb20
+#### simgcd_inat2018_Prototype_Tailaware
 ```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Prototype_Tailaware
+python kaggle_push.py --baseline simgcd --dataset-name inat2018 --config Prototype_Tailaware
 ```
 
-#### simgcd_inat2018_Full_wo_Tail_imb20
+#### simgcd_inat2018_Full_wo_Tail
 ```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Full_wo_Tail
+python kaggle_push.py --baseline simgcd --dataset-name inat2018 --config Full_wo_Tail
 ```
 
-#### simgcd_inat2018_Full_imb20
+#### simgcd_inat2018_Full
 ```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Full
-```
-
-### Imbalance Ratio: imb50
-
-#### simgcd_inat2018_Base_imb50
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Base
-```
-
-#### simgcd_inat2018_Pseudo_imb50
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Pseudo
-```
-
-#### simgcd_inat2018_Prototype_imb50
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Prototype
-```
-
-#### simgcd_inat2018_Prototype_Tailaware_imb50
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Prototype_Tailaware
-```
-
-#### simgcd_inat2018_Full_wo_Tail_imb50
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Full_wo_Tail
-```
-
-#### simgcd_inat2018_Full_imb50
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Full
-```
-
-### Imbalance Ratio: imb100
-
-#### simgcd_inat2018_Base_imb100
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Base
-```
-
-#### simgcd_inat2018_Pseudo_imb100
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Pseudo
-```
-
-#### simgcd_inat2018_Prototype_imb100
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Prototype
-```
-
-#### simgcd_inat2018_Prototype_Tailaware_imb100
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Prototype_Tailaware
-```
-
-#### simgcd_inat2018_Full_wo_Tail_imb100
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Full_wo_Tail
-```
-
-#### simgcd_inat2018_Full_imb100
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Full
-```
-
-### Imbalance Ratio: natural
-
-#### simgcd_inat2018_Base_natural
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Base
-```
-
-#### simgcd_inat2018_Pseudo_natural
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Pseudo
-```
-
-#### simgcd_inat2018_Prototype_natural
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Prototype
-```
-
-#### simgcd_inat2018_Prototype_Tailaware_natural
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Prototype_Tailaware
-```
-
-#### simgcd_inat2018_Full_wo_Tail_natural
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Full_wo_Tail
-```
-
-#### simgcd_inat2018_Full_natural
-```powershell
-python kaggle_push.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Full
+python kaggle_push.py --baseline simgcd --dataset-name inat2018 --config Full
 ```
 
 # ===========================================================================
 # MÔ HÌNH: BACON
 # ===========================================================================
+
+
 
 ## Dataset: CUB (`cub`)
 
@@ -960,130 +864,32 @@ python kaggle_push.py --baseline bacon --dataset-name herb19 --imb-ratio 100 --c
 
 ## Dataset: INATURALIST 2018 (`inat2018`)
 
-### Imbalance Ratio: imb20
-
-#### bacon_inat2018_Base_imb20
+#### bacon_inat2018_Base
 ```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Base
+python kaggle_push.py --baseline bacon --dataset-name inat2018 --config Base
 ```
 
-#### bacon_inat2018_Pseudo_imb20
+#### bacon_inat2018_Pseudo
 ```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Pseudo
+python kaggle_push.py --baseline bacon --dataset-name inat2018 --config Pseudo
 ```
 
-#### bacon_inat2018_Prototype_imb20
+#### bacon_inat2018_Prototype
 ```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Prototype
+python kaggle_push.py --baseline bacon --dataset-name inat2018 --config Prototype
 ```
 
-#### bacon_inat2018_Prototype_Tailaware_imb20
+#### bacon_inat2018_Prototype_Tailaware
 ```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Prototype_Tailaware
+python kaggle_push.py --baseline bacon --dataset-name inat2018 --config Prototype_Tailaware
 ```
 
-#### bacon_inat2018_Full_wo_Tail_imb20
+#### bacon_inat2018_Full_wo_Tail
 ```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Full_wo_Tail
+python kaggle_push.py --baseline bacon --dataset-name inat2018 --config Full_wo_Tail
 ```
 
-#### bacon_inat2018_Full_imb20
+#### bacon_inat2018_Full
 ```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Full
-```
-
-### Imbalance Ratio: imb50
-
-#### bacon_inat2018_Base_imb50
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Base
-```
-
-#### bacon_inat2018_Pseudo_imb50
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Pseudo
-```
-
-#### bacon_inat2018_Prototype_imb50
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Prototype
-```
-
-#### bacon_inat2018_Prototype_Tailaware_imb50
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Prototype_Tailaware
-```
-
-#### bacon_inat2018_Full_wo_Tail_imb50
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Full_wo_Tail
-```
-
-#### bacon_inat2018_Full_imb50
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Full
-```
-
-### Imbalance Ratio: imb100
-
-#### bacon_inat2018_Base_imb100
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Base
-```
-
-#### bacon_inat2018_Pseudo_imb100
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Pseudo
-```
-
-#### bacon_inat2018_Prototype_imb100
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Prototype
-```
-
-#### bacon_inat2018_Prototype_Tailaware_imb100
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Prototype_Tailaware
-```
-
-#### bacon_inat2018_Full_wo_Tail_imb100
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Full_wo_Tail
-```
-
-#### bacon_inat2018_Full_imb100
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Full
-```
-
-### Imbalance Ratio: natural
-
-#### bacon_inat2018_Base_natural
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Base
-```
-
-#### bacon_inat2018_Pseudo_natural
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Pseudo
-```
-
-#### bacon_inat2018_Prototype_natural
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Prototype
-```
-
-#### bacon_inat2018_Prototype_Tailaware_natural
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Prototype_Tailaware
-```
-
-#### bacon_inat2018_Full_wo_Tail_natural
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Full_wo_Tail
-```
-
-#### bacon_inat2018_Full_natural
-```powershell
-python kaggle_push.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Full
+python kaggle_push.py --baseline bacon --dataset-name inat2018 --config Full
 ```

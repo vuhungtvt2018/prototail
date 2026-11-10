@@ -408,137 +408,41 @@ CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name he
 
 ## Dataset: INATURALIST 2018 (`inat2018`)
 
-### Imbalance Ratio: imb20
-
-#### simgcd_inat2018_Base_imb20
+#### simgcd_inat2018_Base
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Base > outputs/logs/simgcd_inat2018_Base_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --config Base > outputs/logs/simgcd_inat2018_Base.log 2>&1 &
 ```
 
-#### simgcd_inat2018_Pseudo_imb20
+#### simgcd_inat2018_Pseudo
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Pseudo > outputs/logs/simgcd_inat2018_Pseudo_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --config Pseudo > outputs/logs/simgcd_inat2018_Pseudo.log 2>&1 &
 ```
 
-#### simgcd_inat2018_Prototype_imb20
+#### simgcd_inat2018_Prototype
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Prototype > outputs/logs/simgcd_inat2018_Prototype_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --config Prototype > outputs/logs/simgcd_inat2018_Prototype.log 2>&1 &
 ```
 
-#### simgcd_inat2018_Prototype_Tailaware_imb20
+#### simgcd_inat2018_Prototype_Tailaware
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Prototype_Tailaware > outputs/logs/simgcd_inat2018_Prototype_Tailaware_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --config Prototype_Tailaware > outputs/logs/simgcd_inat2018_Prototype_Tailaware.log 2>&1 &
 ```
 
-#### simgcd_inat2018_Full_wo_Tail_imb20
+#### simgcd_inat2018_Full_wo_Tail
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Full_wo_Tail > outputs/logs/simgcd_inat2018_Full_wo_Tail_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --config Full_wo_Tail > outputs/logs/simgcd_inat2018_Full_wo_Tail.log 2>&1 &
 ```
 
-#### simgcd_inat2018_Full_imb20
+#### simgcd_inat2018_Full
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 20 --config Full > outputs/logs/simgcd_inat2018_Full_imb20.log 2>&1 &
-```
-
-### Imbalance Ratio: imb50
-
-#### simgcd_inat2018_Base_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Base > outputs/logs/simgcd_inat2018_Base_imb50.log 2>&1 &
-```
-
-#### simgcd_inat2018_Pseudo_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Pseudo > outputs/logs/simgcd_inat2018_Pseudo_imb50.log 2>&1 &
-```
-
-#### simgcd_inat2018_Prototype_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Prototype > outputs/logs/simgcd_inat2018_Prototype_imb50.log 2>&1 &
-```
-
-#### simgcd_inat2018_Prototype_Tailaware_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Prototype_Tailaware > outputs/logs/simgcd_inat2018_Prototype_Tailaware_imb50.log 2>&1 &
-```
-
-#### simgcd_inat2018_Full_wo_Tail_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Full_wo_Tail > outputs/logs/simgcd_inat2018_Full_wo_Tail_imb50.log 2>&1 &
-```
-
-#### simgcd_inat2018_Full_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 50 --config Full > outputs/logs/simgcd_inat2018_Full_imb50.log 2>&1 &
-```
-
-### Imbalance Ratio: imb100
-
-#### simgcd_inat2018_Base_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Base > outputs/logs/simgcd_inat2018_Base_imb100.log 2>&1 &
-```
-
-#### simgcd_inat2018_Pseudo_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Pseudo > outputs/logs/simgcd_inat2018_Pseudo_imb100.log 2>&1 &
-```
-
-#### simgcd_inat2018_Prototype_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Prototype > outputs/logs/simgcd_inat2018_Prototype_imb100.log 2>&1 &
-```
-
-#### simgcd_inat2018_Prototype_Tailaware_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Prototype_Tailaware > outputs/logs/simgcd_inat2018_Prototype_Tailaware_imb100.log 2>&1 &
-```
-
-#### simgcd_inat2018_Full_wo_Tail_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Full_wo_Tail > outputs/logs/simgcd_inat2018_Full_wo_Tail_imb100.log 2>&1 &
-```
-
-#### simgcd_inat2018_Full_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio 100 --config Full > outputs/logs/simgcd_inat2018_Full_imb100.log 2>&1 &
-```
-
-### Imbalance Ratio: natural
-
-#### simgcd_inat2018_Base_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Base > outputs/logs/simgcd_inat2018_Base_natural.log 2>&1 &
-```
-
-#### simgcd_inat2018_Pseudo_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Pseudo > outputs/logs/simgcd_inat2018_Pseudo_natural.log 2>&1 &
-```
-
-#### simgcd_inat2018_Prototype_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Prototype > outputs/logs/simgcd_inat2018_Prototype_natural.log 2>&1 &
-```
-
-#### simgcd_inat2018_Prototype_Tailaware_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Prototype_Tailaware > outputs/logs/simgcd_inat2018_Prototype_Tailaware_natural.log 2>&1 &
-```
-
-#### simgcd_inat2018_Full_wo_Tail_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Full_wo_Tail > outputs/logs/simgcd_inat2018_Full_wo_Tail_natural.log 2>&1 &
-```
-
-#### simgcd_inat2018_Full_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --imb-ratio natural --config Full > outputs/logs/simgcd_inat2018_Full_natural.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline simgcd --dataset-name inat2018 --config Full > outputs/logs/simgcd_inat2018_Full.log 2>&1 &
 ```
 
 # ===========================================================================
 # MÔ HÌNH: BACON
 # ===========================================================================
+
+
 
 ## Dataset: CUB (`cub`)
 
@@ -934,130 +838,32 @@ CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name her
 
 ## Dataset: INATURALIST 2018 (`inat2018`)
 
-### Imbalance Ratio: imb20
-
-#### bacon_inat2018_Base_imb20
+#### bacon_inat2018_Base
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Base > outputs/logs/bacon_inat2018_Base_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --config Base > outputs/logs/bacon_inat2018_Base.log 2>&1 &
 ```
 
-#### bacon_inat2018_Pseudo_imb20
+#### bacon_inat2018_Pseudo
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Pseudo > outputs/logs/bacon_inat2018_Pseudo_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --config Pseudo > outputs/logs/bacon_inat2018_Pseudo.log 2>&1 &
 ```
 
-#### bacon_inat2018_Prototype_imb20
+#### bacon_inat2018_Prototype
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Prototype > outputs/logs/bacon_inat2018_Prototype_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --config Prototype > outputs/logs/bacon_inat2018_Prototype.log 2>&1 &
 ```
 
-#### bacon_inat2018_Prototype_Tailaware_imb20
+#### bacon_inat2018_Prototype_Tailaware
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Prototype_Tailaware > outputs/logs/bacon_inat2018_Prototype_Tailaware_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --config Prototype_Tailaware > outputs/logs/bacon_inat2018_Prototype_Tailaware.log 2>&1 &
 ```
 
-#### bacon_inat2018_Full_wo_Tail_imb20
+#### bacon_inat2018_Full_wo_Tail
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Full_wo_Tail > outputs/logs/bacon_inat2018_Full_wo_Tail_imb20.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --config Full_wo_Tail > outputs/logs/bacon_inat2018_Full_wo_Tail.log 2>&1 &
 ```
 
-#### bacon_inat2018_Full_imb20
+#### bacon_inat2018_Full
 ```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 20 --config Full > outputs/logs/bacon_inat2018_Full_imb20.log 2>&1 &
-```
-
-### Imbalance Ratio: imb50
-
-#### bacon_inat2018_Base_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Base > outputs/logs/bacon_inat2018_Base_imb50.log 2>&1 &
-```
-
-#### bacon_inat2018_Pseudo_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Pseudo > outputs/logs/bacon_inat2018_Pseudo_imb50.log 2>&1 &
-```
-
-#### bacon_inat2018_Prototype_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Prototype > outputs/logs/bacon_inat2018_Prototype_imb50.log 2>&1 &
-```
-
-#### bacon_inat2018_Prototype_Tailaware_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Prototype_Tailaware > outputs/logs/bacon_inat2018_Prototype_Tailaware_imb50.log 2>&1 &
-```
-
-#### bacon_inat2018_Full_wo_Tail_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Full_wo_Tail > outputs/logs/bacon_inat2018_Full_wo_Tail_imb50.log 2>&1 &
-```
-
-#### bacon_inat2018_Full_imb50
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 50 --config Full > outputs/logs/bacon_inat2018_Full_imb50.log 2>&1 &
-```
-
-### Imbalance Ratio: imb100
-
-#### bacon_inat2018_Base_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Base > outputs/logs/bacon_inat2018_Base_imb100.log 2>&1 &
-```
-
-#### bacon_inat2018_Pseudo_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Pseudo > outputs/logs/bacon_inat2018_Pseudo_imb100.log 2>&1 &
-```
-
-#### bacon_inat2018_Prototype_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Prototype > outputs/logs/bacon_inat2018_Prototype_imb100.log 2>&1 &
-```
-
-#### bacon_inat2018_Prototype_Tailaware_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Prototype_Tailaware > outputs/logs/bacon_inat2018_Prototype_Tailaware_imb100.log 2>&1 &
-```
-
-#### bacon_inat2018_Full_wo_Tail_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Full_wo_Tail > outputs/logs/bacon_inat2018_Full_wo_Tail_imb100.log 2>&1 &
-```
-
-#### bacon_inat2018_Full_imb100
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio 100 --config Full > outputs/logs/bacon_inat2018_Full_imb100.log 2>&1 &
-```
-
-### Imbalance Ratio: natural
-
-#### bacon_inat2018_Base_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Base > outputs/logs/bacon_inat2018_Base_natural.log 2>&1 &
-```
-
-#### bacon_inat2018_Pseudo_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Pseudo > outputs/logs/bacon_inat2018_Pseudo_natural.log 2>&1 &
-```
-
-#### bacon_inat2018_Prototype_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Prototype > outputs/logs/bacon_inat2018_Prototype_natural.log 2>&1 &
-```
-
-#### bacon_inat2018_Prototype_Tailaware_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Prototype_Tailaware > outputs/logs/bacon_inat2018_Prototype_Tailaware_natural.log 2>&1 &
-```
-
-#### bacon_inat2018_Full_wo_Tail_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Full_wo_Tail > outputs/logs/bacon_inat2018_Full_wo_Tail_natural.log 2>&1 &
-```
-
-#### bacon_inat2018_Full_natural
-```bash
-CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --imb-ratio natural --config Full > outputs/logs/bacon_inat2018_Full_natural.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python train.py --baseline bacon --dataset-name inat2018 --config Full > outputs/logs/bacon_inat2018_Full.log 2>&1 &
 ```

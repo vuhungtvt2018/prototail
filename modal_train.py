@@ -175,7 +175,7 @@ def _run_training(cmd: list[str], log_file_path: Path) -> None:
 def train_remote(
     baseline: str = "simgcd",
     dataset_name: str = "cub",
-    imb_ratio: str = "20",
+    imb_ratio: Optional[str] = None,
     config_name: str = "Base",
     epochs: int = 200,
     batch_size: int = 128,
@@ -194,7 +194,12 @@ def train_remote(
     storage_volume.reload()
 
     baseline_clean = baseline.lower().strip()
-    run_name = f"{baseline_clean}_{dataset_name}_{config_name}_imb{imb_ratio}"
+    is_natural = dataset_name.lower() in ("inat", "inat2018", "inaturalist", "inaturalist2018") and (imb_ratio is None or str(imb_ratio).lower() in ("natural", "none", "0", ""))
+    if is_natural:
+        run_name = f"{baseline_clean}_{dataset_name}_{config_name}"
+    else:
+        actual_imb = imb_ratio if imb_ratio is not None else "20"
+        run_name = f"{baseline_clean}_{dataset_name}_{config_name}_imb{actual_imb}"
     if exp_name_suffix:
         run_name = exp_name_suffix
 
@@ -223,7 +228,6 @@ def train_remote(
         f"{PROJECT_DIR}/train.py",
         "--baseline", baseline_clean,
         "--dataset-name", dataset_name,
-        "--imb-ratio", str(imb_ratio),
         "--epochs", str(epochs),
         "--batch-size", str(batch_size),
         "--seed", str(seed),
@@ -234,6 +238,8 @@ def train_remote(
         "--output-dir", str(exp_output_dir),
     ]
 
+    if not is_natural and imb_ratio is not None:
+        cmd.extend(["--imb-ratio", str(imb_ratio)])
     if lr is not None:
         cmd.extend(["--lr", str(lr)])
 
@@ -256,7 +262,7 @@ def train_remote(
 def launch(
     baseline: str = "simgcd",
     dataset_name: str = "cub",
-    imb_ratio: str = "20",
+    imb_ratio: Optional[str] = None,
     config: str = "Base",
     epochs: int = 200,
     batch_size: int = 128,

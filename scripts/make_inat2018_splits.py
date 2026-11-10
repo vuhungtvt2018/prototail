@@ -71,7 +71,11 @@ def generate_inat2018_splits(
     assert len(unique_cats) == n_total, f"Expected {n_total} categories, got {len(unique_cats)}"
     print(f"Verified {n_total} contiguous categories [0 .. {n_total - 1}].")
 
-    cls_to_pos = {c: np.where(targets == c)[0] for c in range(n_total)}
+    # Fast O(N) grouping of sample indices by class
+    cls_to_pos_list = [[] for _ in range(n_total)]
+    for idx, c in enumerate(targets):
+        cls_to_pos_list[c].append(idx)
+    cls_to_pos = {c: np.asarray(cls_to_pos_list[c], dtype=np.int64) for c in range(n_total)}
     known_classes = list(range(k))
     novel_classes = list(range(k, n_total))
 
