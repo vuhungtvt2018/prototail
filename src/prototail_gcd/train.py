@@ -287,9 +287,9 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument("--kmeans-max-iter", type=int, default=300)
     parser.add_argument(
         "--eval-feature-mode",
-        choices=["legacy_concat", "balanced_concat"],
-        default="legacy_concat",
-        help="Evaluation feature concatenation mode",
+        choices=["original_parts_concat", "legacy_concat", "balanced_concat"],
+        default="original_parts_concat",
+        help="Feature mode for ProtoTail evaluation",
     )
     parser.add_argument(
         "--gate-warm-start-from-support",

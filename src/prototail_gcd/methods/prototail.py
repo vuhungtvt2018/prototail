@@ -558,16 +558,22 @@ class ProtoTailPlugin:
         ):
             raise TypeError("ProtoTail inference features must be tensors")
         part_classes = part_scores.argmax(dim=-1)
-        gates = self._components().prototypes.gates()[part_classes]
-        pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
-        pooled_parts = pooled_parts / gates.sum(dim=-1, keepdim=True).clamp_min(
-            1e-6
-        )
-        feature_mode = self.config.get("eval_feature_mode", "legacy_concat")
-        if feature_mode == "balanced_concat":
+        feature_mode = self.config.get("eval_feature_mode", "original_parts_concat")
+        if feature_mode == "original_parts_concat":
+            # Class-independent mean gate for pooling: class-conditioned gates
+            # rotate the part feature space per predicted class and confuse
+            # the KMeans eval head.
+            gates = self._components().prototypes.gates().mean(dim=0)
+            pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
+            pooled_parts = pooled_parts / gates.sum().clamp_min(1e-6)
             global_for_eval = F.normalize(global_features, dim=-1)
             part_for_eval = F.normalize(pooled_parts, dim=-1)
         elif feature_mode == "legacy_concat":
+            gates = self._components().prototypes.gates()[part_classes]
+            pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
+            pooled_parts = pooled_parts / gates.sum(dim=-1, keepdim=True).clamp_min(
+                1e-6
+            )
             global_for_eval, part_for_eval = global_features, pooled_parts
         else:
             raise ValueError(f"Unknown eval_feature_mode: {feature_mode}")
