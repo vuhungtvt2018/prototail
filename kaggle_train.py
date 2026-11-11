@@ -370,9 +370,10 @@ def main() -> None:
     parser.add_argument("--kmeans-max-iter", type=int, default=300)
     parser.add_argument(
         "--eval-feature-mode",
-        choices=["legacy_concat", "balanced_concat"],
-        default="legacy_concat",
-        help="Evaluation feature concatenation mode",
+        choices=["original_parts_concat", "legacy_concat", "balanced_concat"],
+        default=None,
+        help="Evaluation feature concatenation mode (default: train.py's "
+        "original_parts_concat; legacy_concat matches old Kaggle runs)",
     )
     parser.add_argument(
         "--gate-warm-start-from-support",
@@ -387,6 +388,22 @@ def main() -> None:
         help="Known frequency mapping mode",
     )
     parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None, help="Kaggle username/account name override")
+    parser.add_argument(
+        "--dinov2-repo",
+        "--dinov2_repo",
+        dest="dinov2_repo",
+        type=str,
+        default=None,
+        help="Local dir containing the dinov2 hub repo (hubconf.py) for offline loading; sets PROTOTAIL_DINO_REPO",
+    )
+    parser.add_argument(
+        "--dinov2-weights",
+        "--dinov2_weights",
+        dest="dinov2_weights",
+        type=str,
+        default=None,
+        help="Path to dinov2_vitb14_pretrain.pth for offline loading; sets PROTOTAIL_DINO_WEIGHTS",
+    )
     args, unknown_args = parser.parse_known_args()
     if args.use_parts:
         args.enable_prototail = True
@@ -539,7 +556,35 @@ def main() -> None:
     else:
         cmd.append("--no-fp16")
 
+    # Pre-flight: verify an offline DINO backbone is available when Internet is off.
+    if Path("/kaggle").is_dir():
+        try:
+            from prototail_gcd.models.dino_backbone import (
+                locate_offline_assets,
+                probe_internet,
+            )
+
+            offline_repo, offline_weights = locate_offline_assets("dinov2_vitb14")
+            if offline_repo is None and not probe_internet():
+                print("=" * 65)
+                print("[Kaggle Setup] WARNING: Internet is OFF and no offline DINO")
+                print("backbone assets were found under /kaggle/input.")
+                print("Training will fail at model build. Fix (pick one):")
+                print("  1. Notebook Settings -> Internet -> ON, or")
+                print("  2. Create + attach the offline dataset:")
+                print("       python scripts/prepare_dinov2_offline.py --output dinov2_offline")
+                print("     upload `dinov2_offline` as a Kaggle dataset, then attach it.")
+                print("  3. Pass --dinov2-repo / --dinov2-weights explicitly.")
+                print("=" * 65)
+                sys.stdout.flush()
+        except Exception:
+            pass
+
     env = {**os.environ, "PYTHONPATH": str(repo_root / "src")}
+    if args.dinov2_repo:
+        env["PROTOTAIL_DINO_REPO"] = str(args.dinov2_repo)
+    if args.dinov2_weights:
+        env["PROTOTAIL_DINO_WEIGHTS"] = str(args.dinov2_weights)
 
     print(f"\n[Starting training]: {' '.join(cmd)}\n")
     sys.stdout.flush()
