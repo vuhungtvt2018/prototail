@@ -89,6 +89,32 @@ class TrainingEngine:
         epoch: int,
     ) -> dict[str, float]:
         device = next(self.model.parameters()).device
+        # Persistent D1/D2 promotion store: accepted pseudo-labels become
+        # supervised targets; an accepted sample is never relabeled.
+        store = self.context.get("promotion_store")
+        if store is not None and len(store) > 0:
+            sids = batch.sample_ids.cpu().numpy().tolist()
+            promoted_lookup = store.lookup(sids)
+            if promoted_lookup:
+                new_targets = batch.known_targets.clone()
+                new_mask = batch.labeled_mask.clone()
+                orig_mask = (
+                    batch.original_labeled_mask.clone()
+                    if batch.original_labeled_mask is not None
+                    else batch.labeled_mask.clone()
+                )
+                for idx, sid in enumerate(sids):
+                    if not orig_mask[idx] and sid in promoted_lookup:
+                        new_targets[idx] = promoted_lookup[sid]
+                        new_mask[idx] = True
+                batch = TrainingBatch(
+                    views=batch.views,
+                    known_targets=new_targets,
+                    labeled_mask=new_mask,
+                    sample_ids=batch.sample_ids,
+                    original_labeled_mask=orig_mask,
+                )
+
         batch = batch.to(device)
         self.model.train()
         for optimizer in self.optimizers.values():

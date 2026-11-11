@@ -569,6 +569,15 @@ def main(allowed_baseline: str | None = None) -> None:
             teacher = GlobalEMATeacher(model.classification_backbone, model.classification_head, m0=0.996).to(device)
         print(f"[TEACHER] GlobalEMATeacher initialized (m0=0.996, device={device})", flush=True)
 
+    from prototail_gcd.pseudo import PromotionStore, PaperDualSelector
+    promotion_store = PromotionStore(dataset.num_classes, known_class_count_teacher)
+    selector = PaperDualSelector(
+        n_known=known_class_count_teacher,
+        n_classes=dataset.num_classes,
+        seed=seed,
+    )
+    context["promotion_store"] = promotion_store
+
     engine = TrainingEngine(
         model=model,
         baseline=baseline,
@@ -613,6 +622,11 @@ def main(allowed_baseline: str | None = None) -> None:
     use_fp16_flag = bool(arguments.fp16 and device.type == "cuda")
     with metrics_path.open("w", encoding="utf-8") as metrics_file:
         for epoch in range(epoch_count):
+            if enable_pseudo and selector.scheduled(epoch):
+                dist_loader = dataset.evaluation_loaders.get("distribution")
+                if dist_loader is not None:
+                    sel_event = selector.run(epoch, model, baseline, dist_loader, device, promotion_store)
+                    print(f"[D1/D2 SELECTOR] Epoch {epoch + 1}: Promoted total={len(promotion_store)} | Details: {sel_event}", flush=True)
             train_metrics = engine.train_epoch(dataset.train_loader, epoch)
             record: dict[str, Any] = {
                 "baseline": baseline_name,
