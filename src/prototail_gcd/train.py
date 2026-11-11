@@ -564,25 +564,7 @@ def main(allowed_baseline: str | None = None) -> None:
     else:
         detected_config = "Custom"
 
-    print("\n" + "=" * 68)
-    print("           PROTOTAIL GCD TRAINING CONFIGURATION")
-    print("=" * 68)
-    print(f"Run Name:                 {config['experiment']['name']}")
-    print(f"Ablation Setting:         {detected_config}")
-    print(f"Baseline Architecture:    {baseline_name.upper()}")
-    print(f"Dataset / Split:          {dataset_name} (imb_ratio={config['data']['protocol'].get('imbalance_ratio', 'N/A')}, known={len(dataset.known_class_ids)}, total={dataset.num_classes})")
-    print(f"Total Epochs / Workers:   {epoch_count} epochs / {optimization.get('num_workers', 2)} workers")
-    print(f"Ablation Component Verification:")
-    print(f"  [1] Baseline Objectives:  ACTIVE")
-    print(f"  [2] ProtoTail Parts:      {'ACTIVE (attached)' if method_enabled else 'DISABLED'}")
-    tail_status = 'ACTIVE (capacity_weight=0.05, warm_start=ON)' if (method_enabled and not ablate_capacity and context['gate_warm_start_from_support']) else ('ACTIVE (capacity_weight=0.05, warm_start=OFF)' if (method_enabled and not ablate_capacity) else 'DISABLED (weight=0.0)')
-    print(f"  [3] Adaptive Tail-aware:  {tail_status}")
-    print(f"  [4] Evaluation KMeans:    {arguments.kmeans_backend.upper()} (n_init={arguments.kmeans_n_init}, max_iter={arguments.kmeans_max_iter})")
-    print(f"  [5] Pseudo-Labeling (D1): {'ACTIVE (known classes)' if enable_pseudo else 'DISABLED'}")
-    print(f"  [6] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
-    print(f"  [7] Momentum Teacher:     {'ACTIVE (m0=0.996)' if teacher is not None else 'DISABLED'}")
-    print("=" * 68 + "\n")
-
+    # Teacher init must precede the banner below ([7] line reads `teacher`).
     known_class_count_teacher = len(dataset.known_class_ids)
     use_teacher = (
         arguments.use_momentum_teacher is True
@@ -602,6 +584,25 @@ def main(allowed_baseline: str | None = None) -> None:
         elif baseline_name == "bacon":
             teacher = GlobalEMATeacher(model.classification_backbone, model.classification_head, m0=0.996).to(device)
         print(f"[TEACHER] GlobalEMATeacher initialized (m0=0.996, device={device})", flush=True)
+
+    print("\n" + "=" * 68)
+    print("           PROTOTAIL GCD TRAINING CONFIGURATION")
+    print("=" * 68)
+    print(f"Run Name:                 {config['experiment']['name']}")
+    print(f"Ablation Setting:         {detected_config}")
+    print(f"Baseline Architecture:    {baseline_name.upper()}")
+    print(f"Dataset / Split:          {dataset_name} (imb_ratio={config['data']['protocol'].get('imbalance_ratio', 'N/A')}, known={len(dataset.known_class_ids)}, total={dataset.num_classes})")
+    print(f"Total Epochs / Workers:   {epoch_count} epochs / {optimization.get('num_workers', 2)} workers")
+    print(f"Ablation Component Verification:")
+    print(f"  [1] Baseline Objectives:  ACTIVE")
+    print(f"  [2] ProtoTail Parts:      {'ACTIVE (attached)' if method_enabled else 'DISABLED'}")
+    tail_status = 'ACTIVE (capacity_weight=0.05, warm_start=ON)' if (method_enabled and not ablate_capacity and context['gate_warm_start_from_support']) else ('ACTIVE (capacity_weight=0.05, warm_start=OFF)' if (method_enabled and not ablate_capacity) else 'DISABLED (weight=0.0)')
+    print(f"  [3] Adaptive Tail-aware:  {tail_status}")
+    print(f"  [4] Evaluation KMeans:    {arguments.kmeans_backend.upper()} (n_init={arguments.kmeans_n_init}, max_iter={arguments.kmeans_max_iter})")
+    print(f"  [5] Pseudo-Labeling (D1): {'ACTIVE (known classes)' if enable_pseudo else 'DISABLED'}")
+    print(f"  [6] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
+    print(f"  [7] Momentum Teacher:     {'ACTIVE (m0=0.996)' if teacher is not None else 'DISABLED'}")
+    print("=" * 68 + "\n")
 
     from prototail_gcd.pseudo import PromotionStore, PaperDualSelector
     # Paper D1/D2 selection applies only to method-enabled configurations
