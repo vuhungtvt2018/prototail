@@ -52,6 +52,111 @@ class SemiConLoss(nn.Module):
         return loss.view(view_count, batch_size).mean()
 
 
+def _collect_logits_and_labels(
+    model: Any,
+    loader: Any,
+    *,
+    num_classes: int,
+    num_known_classes: int,
+    finetune_from_block: int,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Forward the distribution loader once; return (logits, targets, labeled).
+
+    Works for both SimGCD (backbone + projector -> logits) and BaCon
+    (classification_backbone + classification_head -> logits) without KMeans.
+    """
+    from prototail_gcd.models.dino_backbone import forward_global_and_patches
+
+    logits_batches: list[np.ndarray] = []
+    targets_batches: list[np.ndarray] = []
+    labeled_batches: list[np.ndarray] = []
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            if isinstance(batch, DistributionBatch):
+                images = batch.images
+                batch_targets = batch.known_targets
+                batch_labeled = batch.labeled_mask
+            else:
+                images, batch_targets, _sample_ids, batch_labeled = batch
+
+            images = images.to(device, non_blocking=True)
+            backbone = getattr(model, "classification_backbone", None)
+            head = getattr(model, "classification_head", None)
+            if backbone is None or head is None:
+                backbone = getattr(model, "backbone", None)
+                head = getattr(model, "projector", None)
+            if backbone is None or head is None:
+                raise ValueError("Model has no parametric classification path")
+
+            ce_features, _ = forward_global_and_patches(
+                backbone,
+                images,
+                finetune_from_block=finetune_from_block,
+            )
+            logits = head(ce_features)
+            if isinstance(logits, tuple):
+                logits = logits[-1]  # DINOHead -> (projection, logits)
+            logits_batches.append(logits.float().cpu().numpy())
+            targets_batches.append(
+                torch.as_tensor(batch_targets).cpu().numpy().reshape(-1)
+            )
+            labeled_batches.append(
+                torch.as_tensor(batch_labeled).bool().cpu().numpy().reshape(-1)
+            )
+    return (
+        np.concatenate(logits_batches, axis=0),
+        np.concatenate(targets_batches).astype(np.int64),
+        np.concatenate(labeled_batches).astype(bool),
+    )
+
+
+def estimate_class_frequencies_parametric(
+    logits: np.ndarray,
+    targets: np.ndarray,
+    labeled: np.ndarray,
+    *,
+    num_classes: int,
+    num_known_classes: int,
+) -> np.ndarray:
+    """Estimate per-class sample frequencies from parametric logits.
+
+    1. Predict argmax class for every sample (known AND novel heads share the
+       same classifier, so novel classes are covered too).
+    2. Align predicted-class IDs to true class IDs via Hungarian matching on
+       the labeled subset only — no novel ground truth is used.
+    3. Count mapped predictions over ALL samples.
+
+    Unlike the KMeans cluster-size estimator this does not flatten the
+    distribution: the classifier already separates known/novel classes that
+    KMeans merges, so head/tail ratios survive.
+    """
+    predictions = logits.argmax(axis=1).astype(np.int64)
+    labeled_predictions = predictions[labeled]
+    labeled_targets = targets[labeled]
+    if not np.any(labeled):
+        raise ValueError("parametric frequency estimation requires labeled samples")
+    if np.any(labeled_targets < 0):
+        raise ValueError("labeled targets must be non-negative class IDs")
+
+    contingency = np.zeros((num_classes, num_classes), dtype=np.int64)
+    np.add.at(contingency, (labeled_predictions, labeled_targets), 1)
+    pred_rows, class_cols = linear_sum_assignment(-contingency)
+    prediction_to_class = {
+        int(pred): int(cls) for pred, cls in zip(pred_rows, class_cols)
+    }
+
+    estimate = np.zeros(num_classes, dtype=np.float64)
+    counts = np.bincount(predictions, minlength=num_classes)
+    for pred, cls in prediction_to_class.items():
+        estimate[cls] = counts[pred]
+    # Predicted classes that received no labeled anchor keep zero mass;
+    # floor at 1 so capacity targets and logit adjustment stay finite.
+    estimate = np.maximum(estimate, 1.0)
+    return estimate
+
+
 def estimate_class_frequencies(
     model: Any,
     loader: Any,

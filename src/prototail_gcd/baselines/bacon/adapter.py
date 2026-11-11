@@ -380,40 +380,77 @@ class BaConAdapter:
                 "BaCon requires a distribution_loader in context"
             )
         device = next(model.contrastive_backbone.parameters()).device
-        try:
-            frequencies = estimate_class_frequencies(
+        estimation_mode = str(config.get("frequency_estimation_mode", "kmeans"))
+        if estimation_mode == "parametric_hungarian":
+            from prototail_gcd.baselines.bacon.losses import (
+                _collect_logits_and_labels,
+                estimate_class_frequencies_parametric,
+            )
+            logits, targets, labeled = _collect_logits_and_labels(
                 model,
                 loader,
                 num_classes=int(context["num_classes"]),
                 num_known_classes=int(context["num_known_classes"]),
                 finetune_from_block=model.finetune_from_block,
-                random_state=int(config["distribution_cluster_seed"]),
                 device=device,
-                kmeans_backend=str(
-                    context.get("kmeans_backend", "sklearn_cpu")
-                ),
-                kmeans_n_init=int(context.get("kmeans_n_init", 10)),
-                kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
-                known_frequency_mapping=str(
-                    context.get(
-                        "known_frequency_mapping", "bacon_rank"
-                    )
-                ),
             )
-        except RuntimeError:
-            # Fallback: plain sklearn KMeans with standard settings.
-            frequencies = estimate_class_frequencies(
-                model,
-                loader,
+            raw = estimate_class_frequencies_parametric(
+                logits,
+                targets,
+                labeled,
                 num_classes=int(context["num_classes"]),
                 num_known_classes=int(context["num_known_classes"]),
-                finetune_from_block=model.finetune_from_block,
-                random_state=int(config["distribution_cluster_seed"]),
-                device=device,
-                kmeans_backend="sklearn_cpu",
-                kmeans_n_init=4,
-                kmeans_max_iter=300,
             )
+            raw_t = torch.as_tensor(raw, dtype=torch.float32, device=device)
+            previous = context.get("estimated_frequencies")
+            if previous is not None:
+                ema = float(config.get("frequency_estimation_ema", 0.5))
+                frequencies = ema * torch.as_tensor(
+                    previous, dtype=torch.float32, device=device
+                ) + (1.0 - ema) * raw_t
+            else:
+                frequencies = raw_t
+            print(
+                f"[FREQ ESTIMATE] Epoch {epoch + 1} mode=parametric_hungarian "
+                f"head={frequencies.max().item():.0f} tail={frequencies.min().item():.0f} "
+                f"ratio={frequencies.max().item() / max(frequencies.min().item(), 1e-6):.1f}",
+                flush=True,
+            )
+        else:
+            try:
+                frequencies = estimate_class_frequencies(
+                    model,
+                    loader,
+                    num_classes=int(context["num_classes"]),
+                    num_known_classes=int(context["num_known_classes"]),
+                    finetune_from_block=model.finetune_from_block,
+                    random_state=int(config["distribution_cluster_seed"]),
+                    device=device,
+                    kmeans_backend=str(
+                        context.get("kmeans_backend", "sklearn_cpu")
+                    ),
+                    kmeans_n_init=int(context.get("kmeans_n_init", 10)),
+                    kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
+                    known_frequency_mapping=str(
+                        context.get(
+                            "known_frequency_mapping", "bacon_rank"
+                        )
+                    ),
+                )
+            except RuntimeError:
+                # Fallback: plain sklearn KMeans with standard settings.
+                frequencies = estimate_class_frequencies(
+                    model,
+                    loader,
+                    num_classes=int(context["num_classes"]),
+                    num_known_classes=int(context["num_known_classes"]),
+                    finetune_from_block=model.finetune_from_block,
+                    random_state=int(config["distribution_cluster_seed"]),
+                    device=device,
+                    kmeans_backend="sklearn_cpu",
+                    kmeans_n_init=4,
+                    kmeans_max_iter=300,
+                )
         adjustment = distribution_logit_adjustment(
             frequencies,
             strength=float(config["logit_adjustment_strength"]),

@@ -205,6 +205,11 @@ class SimGCDAdapter:
             return None
         loader = context.get("distribution_loader")
         if loader is None:
+            # Dead path for standard runs (both baselines declare
+            # "distribution_estimator" so train.py always provides the
+            # loader). Kept only so smoke tests without a distribution
+            # loader still run; NOT used for capacity/warm-start decisions
+            # in real experiments.
             freq = context.get("class_frequencies")
             if freq is not None:
                 if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
@@ -213,21 +218,60 @@ class SimGCDAdapter:
                 return {"estimated_frequencies": freq}
             return None
         device = next(model.backbone.parameters()).device
-        from prototail_gcd.baselines.bacon.losses import estimate_class_frequencies
+        estimation_mode = str(config.get("frequency_estimation_mode", "kmeans"))
         try:
-            frequencies = estimate_class_frequencies(
-                model,
-                loader,
-                num_classes=int(context["num_classes"]),
-                num_known_classes=int(context["num_known_classes"]),
-                finetune_from_block=model.finetune_from_block,
-                random_state=int(config.get("distribution_cluster_seed", 0)),
-                device=device,
-                kmeans_backend=str(context.get("kmeans_backend", "sklearn_cpu")),
-                kmeans_n_init=int(context.get("kmeans_n_init", 10)),
-                kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
-                known_frequency_mapping=str(context.get("known_frequency_mapping", "direct_hungarian")),
-            )
+            if estimation_mode == "parametric_hungarian":
+                import numpy as np
+                from prototail_gcd.baselines.bacon.losses import (
+                    _collect_logits_and_labels,
+                    estimate_class_frequencies_parametric,
+                )
+                logits, targets, labeled = _collect_logits_and_labels(
+                    model,
+                    loader,
+                    num_classes=int(context["num_classes"]),
+                    num_known_classes=int(context["num_known_classes"]),
+                    finetune_from_block=model.finetune_from_block,
+                    device=device,
+                )
+                raw = estimate_class_frequencies_parametric(
+                    logits,
+                    targets,
+                    labeled,
+                    num_classes=int(context["num_classes"]),
+                    num_known_classes=int(context["num_known_classes"]),
+                )
+                raw_t = torch.as_tensor(raw, dtype=torch.float32, device=device)
+                # EMA across estimation rounds stabilizes early-epoch noise.
+                previous = context.get("estimated_frequencies")
+                if previous is not None:
+                    ema = float(config.get("frequency_estimation_ema", 0.5))
+                    frequencies = ema * torch.as_tensor(
+                        previous, dtype=torch.float32, device=device
+                    ) + (1.0 - ema) * raw_t
+                else:
+                    frequencies = raw_t
+                print(
+                    f"[FREQ ESTIMATE] Epoch {epoch + 1} mode=parametric_hungarian "
+                    f"head={frequencies.max().item():.0f} tail={frequencies.min().item():.0f} "
+                    f"ratio={frequencies.max().item() / max(frequencies.min().item(), 1e-6):.1f}",
+                    flush=True,
+                )
+            else:
+                from prototail_gcd.baselines.bacon.losses import estimate_class_frequencies
+                frequencies = estimate_class_frequencies(
+                    model,
+                    loader,
+                    num_classes=int(context["num_classes"]),
+                    num_known_classes=int(context["num_known_classes"]),
+                    finetune_from_block=model.finetune_from_block,
+                    random_state=int(config.get("distribution_cluster_seed", 0)),
+                    device=device,
+                    kmeans_backend=str(context.get("kmeans_backend", "sklearn_cpu")),
+                    kmeans_n_init=int(context.get("kmeans_n_init", 10)),
+                    kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
+                    known_frequency_mapping=str(context.get("known_frequency_mapping", "direct_hungarian")),
+                )
             model.train()
             if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
                 if not hasattr(model, "prototail"):
@@ -241,13 +285,8 @@ class SimGCDAdapter:
                     flush=True,
                 )
             return {"estimated_frequencies": frequencies}
-        except Exception:
-            freq = context.get("class_frequencies")
-            if freq is not None:
-                if epoch == 0 and bool(context.get("gate_warm_start_from_support", False)):
-                    if hasattr(model, "prototail"):
-                        model.prototail.prototypes.warm_start_from_estimated_support(freq)
-                return {"estimated_frequencies": freq}
+        except Exception as estimation_error:
+            print(f"[FREQ ESTIMATE] Failed ({estimation_error}); falling back to GT class_frequencies for shot metrics only — NOT for capacity/warm-start.", flush=True)
             return None
 
     def after_optimizer_step(

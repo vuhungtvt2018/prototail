@@ -21,6 +21,8 @@ baseline:
       warmup_teacher_temp: 0.07
       teacher_temp: 0.04
       warmup_teacher_temp_epochs: 30
+      frequency_estimation_mode: parametric_hungarian
+      frequency_estimation_ema: 0.5
 
 method:
   name: prototail
