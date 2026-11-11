@@ -604,13 +604,21 @@ def main(allowed_baseline: str | None = None) -> None:
         print(f"[TEACHER] GlobalEMATeacher initialized (m0=0.996, device={device})", flush=True)
 
     from prototail_gcd.pseudo import PromotionStore, PaperDualSelector
+    # Paper D1/D2 selection applies only to method-enabled configurations
+    # (Full / Full_wo_Tail). The standalone "Pseudo" ablation keeps the
+    # original inline pseudo-CE unchanged so the comparison stays clean.
     promotion_store = PromotionStore(dataset.num_classes, known_class_count_teacher)
     selector = PaperDualSelector(
         n_known=known_class_count_teacher,
         n_classes=dataset.num_classes,
         seed=seed,
     )
-    context["promotion_store"] = promotion_store
+    if not method_enabled:
+        # Empty store + disabled selector: adapters see no promotion_store
+        # in context, inline pseudo stays active for the Pseudo ablation.
+        selector = None
+    else:
+        context["promotion_store"] = promotion_store
 
     engine = TrainingEngine(
         model=model,
@@ -656,7 +664,7 @@ def main(allowed_baseline: str | None = None) -> None:
     use_fp16_flag = bool(arguments.fp16 and device.type == "cuda")
     with metrics_path.open("w", encoding="utf-8") as metrics_file:
         for epoch in range(epoch_count):
-            if enable_pseudo and selector.scheduled(epoch):
+            if enable_pseudo and selector is not None and selector.scheduled(epoch):
                 dist_loader = dataset.evaluation_loaders.get("distribution")
                 if dist_loader is not None:
                     sel_event = selector.run(epoch, model, baseline, dist_loader, device, promotion_store)
