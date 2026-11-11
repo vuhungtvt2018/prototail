@@ -275,6 +275,14 @@ def main(allowed_baseline: str | None = None) -> None:
         default="sklearn_cpu",
         help="KMeans backend for clustering eval and distribution estimation",
     )
+    parser.add_argument(
+        "--use-momentum-teacher",
+        "--use_momentum_teacher",
+        dest="use_momentum_teacher",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable GlobalEMATeacher with momentum 0.996",
+    )
     parser.add_argument("--kmeans-n-init", type=int, default=10)
     parser.add_argument("--kmeans-max-iter", type=int, default=300)
     parser.add_argument(
@@ -538,7 +546,28 @@ def main(allowed_baseline: str | None = None) -> None:
     print(f"  [4] Evaluation KMeans:    {arguments.kmeans_backend.upper()} (n_init={arguments.kmeans_n_init}, max_iter={arguments.kmeans_max_iter})")
     print(f"  [5] Pseudo-Labeling (D1): {'ACTIVE (known classes)' if enable_pseudo else 'DISABLED'}")
     print(f"  [6] Pseudo-Labeling (D2): {'ACTIVE (novel classes)' if (enable_pseudo and enable_novel) else 'DISABLED'}")
+    print(f"  [7] Momentum Teacher:     {'ACTIVE (m0=0.996)' if teacher is not None else 'DISABLED'}")
     print("=" * 68 + "\n")
+
+    known_class_count_teacher = len(dataset.known_class_ids)
+    use_teacher = (
+        arguments.use_momentum_teacher is True
+        or (
+            arguments.use_momentum_teacher is None
+            and bool(
+                baseline_config.get("use_momentum_teacher", False)
+                or detected_config.startswith("Full")
+            )
+        )
+    )
+    teacher = None
+    if use_teacher:
+        from prototail_gcd.training.momentum_teacher import GlobalEMATeacher
+        if baseline_name == "simgcd":
+            teacher = GlobalEMATeacher(model.backbone, model.projector, m0=0.996).to(device)
+        elif baseline_name == "bacon":
+            teacher = GlobalEMATeacher(model.classification_backbone, model.classification_head, m0=0.996).to(device)
+        print(f"[TEACHER] GlobalEMATeacher initialized (m0=0.996, device={device})", flush=True)
 
     engine = TrainingEngine(
         model=model,
@@ -550,6 +579,7 @@ def main(allowed_baseline: str | None = None) -> None:
         context=context,
         schedulers=schedulers,
         use_fp16=bool(arguments.fp16 and device.type == "cuda"),
+        teacher=teacher,
     )
 
     output_directory = Path(config["experiment"]["output_dir"])

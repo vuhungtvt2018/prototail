@@ -1,6 +1,6 @@
 """Small training engine that delegates method semantics to adapters."""
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import torch
 
@@ -33,6 +33,7 @@ class TrainingEngine:
         context: Mapping[str, Any] | None = None,
         schedulers: Mapping[str, Any] | None = None,
         use_fp16: bool = False,
+        teacher: Any | None = None,
     ) -> None:
         if not optimizers:
             raise ValueError("at least one optimizer is required")
@@ -45,6 +46,7 @@ class TrainingEngine:
         self.context = dict(context or {})
         self.schedulers = dict(schedulers or {})
         self.use_fp16 = use_fp16
+        self.teacher = teacher if teacher is not None else self.context.get("teacher")
         self.scaler = make_grad_scaler(enabled=use_fp16)
         if set(self.schedulers) - set(self.optimizers):
             raise ValueError("each scheduler must match a named optimizer")
@@ -92,11 +94,27 @@ class TrainingEngine:
         for optimizer in self.optimizers.values():
             optimizer.zero_grad(set_to_none=True)
 
+        step_context = {**self.context, "epoch": epoch}
+        if self.teacher is not None:
+            with torch.no_grad(), autocast_cuda(enabled=self.use_fp16 and device.type == "cuda"):
+                images = torch.cat(tuple(batch.views), dim=0)
+                ft_block = int(getattr(self.model, "finetune_from_block", 0))
+
+                def forward_features(bb: Any, imgs: torch.Tensor) -> torch.Tensor:
+                    if hasattr(bb, "prepare_tokens"):
+                        from prototail_gcd.models.dino_backbone import forward_global_and_patches
+                        feats, _ = forward_global_and_patches(bb, imgs, finetune_from_block=ft_block)
+                        return feats
+                    return bb(imgs)
+
+                step_context["teacher_logits"] = self.teacher.forward(
+                    images, forward_features=forward_features
+                )
+
         with autocast_cuda(enabled=self.use_fp16 and device.type == "cuda"):
             output = self.baseline.forward(self.model, batch)
             if self.method is not None:
                 output = self.method.augment_output(output)
-            step_context = {**self.context, "epoch": epoch}
             losses = self.baseline.compute_losses(
                 output,
                 batch,
@@ -156,6 +174,22 @@ class TrainingEngine:
             total_loss.backward()
             for optimizer in self.optimizers.values():
                 optimizer.step()
+        if self.teacher is not None:
+            total_epochs = int(self.context.get("total_epochs", 200))
+            if hasattr(self.model, "backbone") and hasattr(self.model, "projector"):
+                self.teacher.update(
+                    self.model.backbone,
+                    self.model.projector,
+                    epoch=epoch,
+                    total_epochs=total_epochs,
+                )
+            elif hasattr(self.model, "classification_backbone") and hasattr(self.model, "classification_head"):
+                self.teacher.update(
+                    self.model.classification_backbone,
+                    self.model.classification_head,
+                    epoch=epoch,
+                    total_epochs=total_epochs,
+                )
         after_step = getattr(self.baseline, "after_optimizer_step", None)
         if after_step is not None:
             after_step(
