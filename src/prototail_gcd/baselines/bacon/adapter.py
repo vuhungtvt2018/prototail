@@ -373,15 +373,40 @@ class BaConAdapter:
                 "BaCon requires a distribution_loader in context"
             )
         device = next(model.contrastive_backbone.parameters()).device
-        frequencies = estimate_class_frequencies(
-            model,
-            loader,
-            num_classes=int(context["num_classes"]),
-            num_known_classes=int(context["num_known_classes"]),
-            finetune_from_block=model.finetune_from_block,
-            random_state=int(config["distribution_cluster_seed"]),
-            device=device,
-        )
+        try:
+            frequencies = estimate_class_frequencies(
+                model,
+                loader,
+                num_classes=int(context["num_classes"]),
+                num_known_classes=int(context["num_known_classes"]),
+                finetune_from_block=model.finetune_from_block,
+                random_state=int(config["distribution_cluster_seed"]),
+                device=device,
+                kmeans_backend=str(
+                    context.get("kmeans_backend", "sklearn_cpu")
+                ),
+                kmeans_n_init=int(context.get("kmeans_n_init", 10)),
+                kmeans_max_iter=int(context.get("kmeans_max_iter", 300)),
+                known_frequency_mapping=str(
+                    context.get(
+                        "known_frequency_mapping", "bacon_rank"
+                    )
+                ),
+            )
+        except RuntimeError:
+            # Fallback: plain sklearn KMeans with standard settings.
+            frequencies = estimate_class_frequencies(
+                model,
+                loader,
+                num_classes=int(context["num_classes"]),
+                num_known_classes=int(context["num_known_classes"]),
+                finetune_from_block=model.finetune_from_block,
+                random_state=int(config["distribution_cluster_seed"]),
+                device=device,
+                kmeans_backend="sklearn_cpu",
+                kmeans_n_init=4,
+                kmeans_max_iter=300,
+            )
         adjustment = distribution_logit_adjustment(
             frequencies,
             strength=float(config["logit_adjustment_strength"]),
