@@ -33,7 +33,7 @@ method:
     gate_regularization_weight: 0.05
     capacity_regularization_weight: 0.0
     learning_rate: 0.05
-    gate_learning_rate: 0.01
+    gate_learning_rate: 0.1
     shared_backbone_learning_rate: 0.01
     prototype_warmup_epochs: 30
     known_prototype_end_epoch: 60
