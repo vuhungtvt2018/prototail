@@ -36,7 +36,6 @@ method:
     gate_learning_rate: 0.1
     shared_backbone_learning_rate: 0.01
     prototype_warmup_epochs: 30
-    known_prototype_end_epoch: 60
     novel_prototype_end_epoch: 60
     prototype_momentum: 0.99
     pseudo_confidence: 0.7

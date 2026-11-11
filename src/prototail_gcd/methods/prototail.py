@@ -605,3 +605,22 @@ class ProtoTailPlugin:
             "fused": fused_logits.argmax(dim=-1),
             "global": global_logits.argmax(dim=-1),
         }
+
+    def diagnostic_features(
+        self,
+        output: ModelOutput,
+    ) -> Mapping[str, torch.Tensor]:
+        """KMeans-on-global-only diagnostic: cluster global features alone so
+        the part contribution in the main concat-feature KMeans eval can be
+        measured separately (part boost = main - global_only)."""
+        if "student" not in output.branches:
+            return {}
+        values = output.auxiliary.get("prototail")
+        if not isinstance(values, Mapping):
+            raise RuntimeError("ProtoTail output was not augmented")
+        global_features = values.get("global_features")
+        if not isinstance(global_features, torch.Tensor):
+            raise TypeError("ProtoTail diagnostic features must be tensors")
+        return {
+            "global_kmeans": F.normalize(global_features.float(), dim=-1),
+        }

@@ -98,6 +98,7 @@ def evaluate(
     class_id_batches: list[np.ndarray] = []
     feature_batches: list[np.ndarray] = []
     diagnostic_batches: dict[str, list[np.ndarray]] = {}
+    diagnostic_feature_batches: dict[str, list[np.ndarray]] = {}
     prediction_kind: str | None = None
 
     with torch.no_grad(), autocast_cuda(use_fp16 and device.type == "cuda"):
@@ -115,6 +116,13 @@ def evaluate(
                     diagnostic_batches.setdefault(name, []).append(
                         _as_numpy(values)
                     )
+                if hasattr(method, "diagnostic_features"):
+                    for name, values in method.diagnostic_features(
+                        output
+                    ).items():
+                        diagnostic_feature_batches.setdefault(
+                            name, []
+                        ).append(_as_numpy(values))
             else:
                 predictions = adapter.predict(output)
                 if hasattr(adapter, "evaluation_diagnostics"):
@@ -178,6 +186,32 @@ def evaluate(
         diagnostic_metrics = clustering_metrics(
             targets=targets,
             predictions=diagnostic_predictions,
+            known_class_count=known_class_count,
+            class_counts=class_counts,
+            accuracy_scale=accuracy_scale,
+            empty_group_value=empty_metric_value,
+        )
+        metrics.update(
+            {
+                f"{name}_{metric_name}": value
+                for metric_name, value in diagnostic_metrics.items()
+            }
+        )
+    for name, batches in diagnostic_feature_batches.items():
+        diagnostic_features = np.concatenate(batches)
+        if diagnostic_features.ndim != 2:
+            raise ValueError(f"Diagnostic features must be 2-D: {name}")
+        diagnostic_ids = fit_predict_kmeans(
+            diagnostic_features,
+            num_classes,
+            seed=random_state,
+            backend=kmeans_backend,
+            n_init=kmeans_n_init,
+            max_iter=kmeans_max_iter,
+        )
+        diagnostic_metrics = clustering_metrics(
+            targets=targets,
+            predictions=diagnostic_ids,
             known_class_count=known_class_count,
             class_counts=class_counts,
             accuracy_scale=accuracy_scale,
@@ -713,6 +747,10 @@ def main(allowed_baseline: str | None = None) -> None:
                     f_acc = test_m["fused_all_acc"]
                     g_acc = test_m["global_all_acc"]
                     print(f"  [ProtoTail Diagnostics] Fused: {f_acc:.2f} | Global: {g_acc:.2f} | Part Boost: {(f_acc - g_acc):+.2f}", flush=True)
+                if "global_kmeans_all_acc" in test_m:
+                    gk_acc = test_m["global_kmeans_all_acc"]
+                    main_acc = test_m.get("all_acc", 0.0)
+                    print(f"  [ProtoTail KMeans Split] Main(concat): {main_acc:.2f} | Global-only: {gk_acc:.2f} | Part Contribution: {(main_acc - gk_acc):+.2f}", flush=True)
                 elif "parametric_all_acc" in test_m:
                     p_acc = test_m["parametric_all_acc"]
                     p_old = test_m.get("parametric_known_acc", 0.0)
@@ -750,13 +788,13 @@ def main(allowed_baseline: str | None = None) -> None:
                         active_s = float(gates.sum(dim=-1).mean().item())
                         k_slots = float(gates[:known_class_count].sum(dim=-1).mean().item()) if known_class_count > 0 else 0.0
                         u_slots = float(gates[known_class_count:].sum(dim=-1).mean().item()) if gates.shape[0] > known_class_count else 0.0
-                        freq = context.get("estimated_frequencies", context.get("class_frequencies"))
+                        freq = engine.context.get("estimated_frequencies")
                         mae_str = ""
                         if freq is not None:
                             f_t = torch.as_tensor(freq, dtype=gates.dtype, device=gates.device)
                             desired = bank.target_capacities(f_t)
                             c_mae = float((gates.sum(dim=-1) - desired).abs().mean().item())
-                            mae_str = f" capacity_mae={c_mae:.4f}"
+                            mae_str = f" capacity_mae={c_mae:.4f} (vs estimated_frequencies, same source as dist_gate)"
                         print(f"[PROTOTYPE CAMERA] Epoch {epoch + 1}: Gate mean={mean_g:.3f} max={max_g:.3f} frac_open(>0.5)={frac_o:.1%} active_slots_per_class~={active_s:.2f}{mae_str}", flush=True)
                         print(f"  Active Slots/Class: Known ~ {k_slots:.2f} | Novel ~ {u_slots:.2f}", flush=True)
                 except Exception:

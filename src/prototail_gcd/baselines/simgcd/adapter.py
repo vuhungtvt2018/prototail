@@ -381,6 +381,13 @@ def compute_simgcd_losses(
         config.get("enable_novel_pseudo", False)
         or context.get("enable_novel_pseudo", False)
     )
+    # Paper D1/D2 promotion store supersedes the inline pseudo-CE: the store
+    # promotes vetted samples (persistent, never relabeled) as supervised
+    # targets in the engine. Running both mechanisms at once injects the old
+    # noisy inline path alongside the clean one.
+    if context.get("promotion_store") is not None:
+        enable_pseudo = False
+        enable_novel = False
     epoch = int(context.get("epoch", 0))
     total_epochs = int(context.get("total_epochs", 200))
     pseudo_warmup = int(
