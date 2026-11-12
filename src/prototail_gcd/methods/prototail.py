@@ -93,8 +93,14 @@ class PartPrototypeBank(nn.Module):
         """Approximate the target gate mass at init."""
         target = self.target_capacities(frequencies.to(self.gate_logits.device))
         per_slot = (target / self.num_slots).clamp(0.02, 0.98)
-        logits = torch.logit(per_slot).unsqueeze(-1)
-        self.gate_logits.copy_(logits.expand_as(self.gate_logits))
+        # Uniform logits across slots (old expand_as) are symmetric: the
+        # capacity-MSE gradient through gates.sum is identical for every
+        # slot, nothing breaks the tie, and the top-k mask picks an
+        # arbitrary-but-fixed slot set forever. Per-SLOT jitter gives CE
+        # gradients a direction to break the symmetry.
+        noise = 0.15 * torch.rand_like(self.gate_logits) - 0.075
+        logits = torch.logit(per_slot.clamp(0.02, 0.98)).unsqueeze(-1)
+        self.gate_logits.copy_((logits + noise).clamp(-3.89, 3.89))
 
     def forward(
         self,
@@ -123,13 +129,24 @@ class PartPrototypeBank(nn.Module):
         return scores, similarities, gates
 
     def _topk_mask(self, gates: torch.Tensor) -> torch.Tensor:
-        """Binary [num_classes, num_slots] mask of the top-k open slots."""
-        k = int(getattr(self, "top_k_slots", 0) or self.num_slots)
-        k = max(1, min(k, self.num_slots))
-        if k >= self.num_slots:
-            return torch.ones_like(gates)
-        topk = gates.topk(k, dim=-1).indices
-        return torch.zeros_like(gates).scatter_(1, topk, 1.0)
+        """Per-class top-k mask with k = round(target capacity).
+
+        A fixed k (old behaviour) makes target capacities of 1 and
+        num_slots unrepresentable — the capacity MSE has a permanent floor
+        and its gradient pulls gates toward an unreachable compromise. k
+        derived per class from the current gate mass keeps every target
+        representable while retaining the hard-selection gradient benefit.
+        """
+        gate_mass = gates.sum(dim=-1)
+        k = gate_mass.round().clamp(1.0, float(self.num_slots)).long()
+        # Threshold: a slot is open when its gate mass ranks in the class's
+        # top-k. Sort gates per class descending and keep the k-th value.
+        sorted_gates, _ = gates.sort(dim=-1, descending=True)
+        # k-th largest gate per class (index k-1)
+        threshold = sorted_gates.gather(
+            1, (k - 1).clamp(min=0, max=self.num_slots - 1).unsqueeze(-1)
+        )
+        return (gates >= threshold).float()
 
     @torch.no_grad()
     def update_known(
@@ -293,8 +310,13 @@ class ProtoTailPlugin:
             batch.known_targets,
             device=logits.device,
         ).long()
+        # D1-promoted samples are pseudo-labels, not ground truth: part
+        # classification must only be supervised on the ORIGINAL labeled
+        # split, otherwise promoted noise flows into the part CE.
         labeled = torch.as_tensor(
-            batch.labeled_mask,
+            batch.original_labeled_mask
+            if batch.original_labeled_mask is not None
+            else batch.labeled_mask,
             device=logits.device,
         ).bool()
         if labels.numel() != batch_size or labeled.numel() != batch_size:
@@ -351,12 +373,15 @@ class ProtoTailPlugin:
 
         gates = values["gates"]
         epoch = int(context["epoch"])
-        regularize_gates = is_simgcd or has_labeled
+        # g*(1-g) removed: it has fixed points at g≈0.27/0.73 with gradient
+        # 0.32 that dominated the ~1e-4 CE gradients and pinned gates at the
+        # regularizer's equilibrium instead of the capacity targets
+        # (gate_max frozen at 0.656→0.670 while dist_gate grew 0.14→0.58,
+        # i.e. gates DRIFTED AWAY from targets). Keep only the sum-bound
+        # hinge, which agrees with the capacity objective.
         gate_regularization = logits.sum() * 0.0
-        if regularize_gates:
-            gate_regularization = (
-                gates * (1.0 - gates)
-            ).mean() + F.relu(
+        if is_simgcd or has_labeled:
+            gate_regularization = F.relu(
                 1.0 - gates.sum(dim=-1)
             ).mean() * float(self.config.get("gate_bound_weight", 0.05))
         losses["gate_regularization"] = gate_regularization
@@ -365,7 +390,7 @@ class ProtoTailPlugin:
             self.config.get("capacity_regularization_weight", 0.0)
         )
         capacity_loss = logits.sum() * 0.0
-        if capacity_weight > 0 and regularize_gates:
+        if capacity_weight > 0 and (is_simgcd or has_labeled):
             frequencies = context.get("estimated_frequencies")
             if frequencies is None:
                 frequencies = context.get("class_frequencies")
@@ -462,15 +487,14 @@ class ProtoTailPlugin:
         finetune_from_block = int(
             getattr(model, "finetune_from_block", 11)
         )
-        self._shared_parameters = tuple(
-            parameter
-            for name, parameter in backbone.named_parameters()
-            if parameter.requires_grad
-            and (
-                (block_index := parse_block_index(name)) is not None
-                and block_index >= finetune_from_block
-            )
-        )
+        # Do NOT put backbone parameters in a second optimizer. The baseline
+        # optimizer already steps every block >= finetune_from_block; adding
+        # the same Parameter objects here gave them two independent SGD
+        # momentum buffers and two updates per batch (lr + shared lr summed,
+        # weight decay doubled, part_classification pulling the backbone
+        # directly). Part-only parameters belong here; backbone fine-tuning
+        # stays solely in the baseline optimizer.
+        self._shared_parameters = ()
         part_groups: list[Mapping[str, Any]] = [
             {
                 "params": list(components.parts.parameters()),
@@ -529,8 +553,13 @@ class ProtoTailPlugin:
         parts = values["parts"][:batch_size].detach()
         logits = values["global_logits"][:batch_size].detach()
         labels = torch.as_tensor(batch.known_targets, device=parts.device).long()
+        # Prototype EMA update_known only on ORIGINAL labeled samples:
+        # promoted pseudo-labels would drag novel-class prototypes toward
+        # known centroids (novel acc collapsed right after ep30 promotions).
         labeled = torch.as_tensor(
-            batch.labeled_mask,
+            batch.original_labeled_mask
+            if batch.original_labeled_mask is not None
+            else batch.labeled_mask,
             device=parts.device,
         ).bool()
         bank = self._components().prototypes
@@ -588,20 +617,21 @@ class ProtoTailPlugin:
         part_classes = part_scores.argmax(dim=-1)
         feature_mode = self.config.get("eval_feature_mode", "original_parts_concat")
         if feature_mode == "original_parts_concat":
-            # Class-independent mean gate for pooling: class-conditioned gates
-            # rotate the part feature space per predicted class and confuse
-            # the KMeans eval head. Consistent with training, only the top-k
-            # open slots contribute to the pool.
+            # Per-class gate pooling: the whole point of class-conditioned
+            # capacity is that head classes keep more slots open than tail
+            # classes. Pooling with gates.mean(dim=0) (old behaviour)
+            # discarded that structure entirely — Full and Full_wo_Tail
+            # evaluated with the SAME fixed mask, so the ablation could not
+            # show anything. Per-class soft gates keep the head/tail
+            # contrast inside the KMeans feature space (normalization makes
+            # the per-class scale shift mild for clustering).
             bank = self._components().prototypes
-            gates = bank.gates().mean(dim=0)
-            if bank.top_k_slots and bank.top_k_slots < bank.num_slots:
-                topk = gates.topk(int(bank.top_k_slots)).indices
-                mask = torch.zeros_like(gates).scatter_(0, topk, 1.0)
-                pooled_parts = (parts * mask.unsqueeze(-1)).sum(dim=1)
-                pooled_parts = pooled_parts / mask.sum().clamp_min(1e-6)
-            else:
-                pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
-                pooled_parts = pooled_parts / gates.sum().clamp_min(1e-6)
+            gates_all = bank.gates()
+            gates = gates_all[part_classes]
+            pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
+            pooled_parts = pooled_parts / gates.sum(
+                dim=-1, keepdim=True
+            ).clamp_min(1e-6)
             global_for_eval = F.normalize(global_features, dim=-1)
             part_for_eval = F.normalize(pooled_parts, dim=-1)
         elif feature_mode == "legacy_concat":

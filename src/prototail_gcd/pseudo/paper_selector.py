@@ -257,10 +257,15 @@ class PaperDualSelector:
             "max_sil_ratio": 0.0,
             "novel_candidate_clusters": 0,
         }
+        # Size gate scales with average cluster size: KMeans k=196 on
+        # ~2081 unlabeled samples gives ~10.6 samples/cluster, so a hard
+        # threshold of 10 structurally rejected 48-61 of 98 novel
+        # clusters every round. Scale with half the mean instead.
+        size_threshold = max(5.0, 0.5 * max(float(size_a.mean()), 1e-6))
         for cluster in range(k):
             if cluster in known_clusters:
                 continue
-            if size_a[cluster] < 10:
+            if size_a[cluster] < size_threshold:
                 diag["sizes_lt_10"] += 1
                 continue
             if stability[cluster] < 0.6:

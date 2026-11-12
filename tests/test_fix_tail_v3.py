@@ -70,9 +70,17 @@ class FixTailV3Tests(unittest.TestCase):
         )
         groups = plugin.optimizer_groups(model)
         self.assertIn("part", groups)
-        # Verify shared backbone parameters are included in part groups with lr=0.01
-        part_group_lrs = [g.get("lr") for g in groups["part"]]
-        self.assertIn(0.01, part_group_lrs)
+        # Backbone fine-tuning lives SOLELY in the baseline optimizer now.
+        # Adding the same Parameter objects to the method optimizer gave
+        # them two momentum buffers and two updates per batch (double-step
+        # bug). The part group must contain ONLY part-module parameters.
+        part_params = {
+            id(p) for group in groups["part"] for p in group["params"]
+        }
+        backbone_params = {
+            id(p) for p in model.contrastive_backbone.parameters()
+        }
+        self.assertFalse(part_params & backbone_params)
 
 
 if __name__ == "__main__":

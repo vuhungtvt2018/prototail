@@ -255,14 +255,14 @@ class ProtoTailTests(unittest.TestCase):
             for parameter in group["params"]
         }
 
-        self.assertIn(
+        # Backbone parameters must NOT appear in the method optimizer: the
+        # baseline optimizer already steps them, and duplicating them gave
+        # two momentum buffers / two updates per batch (double-step bug).
+        self.assertNotIn(
             id(model.backbone.blocks[11].weight),
             part_parameter_ids,
         )
-        self.assertIn(
-            id(model.backbone.blocks[11].weight),
-            {id(parameter) for parameter in plugin.shared_parameters()},
-        )
+        self.assertEqual(list(plugin.shared_parameters()), [])
         self.assertNotIn(
             id(model.backbone.blocks[10].weight),
             part_parameter_ids,

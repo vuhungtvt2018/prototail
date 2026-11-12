@@ -2,6 +2,7 @@
 
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -255,13 +256,15 @@ class BaConAdapter:
             config.get("enable_novel_pseudo", False)
             or context.get("enable_novel_pseudo", False)
         )
-        # Paper D1/D2 promotion store supersedes the inline pseudo-CE: the
-        # store promotes vetted samples (persistent, never relabeled) as
-        # supervised targets in the engine. Running both mechanisms at once
-        # injects the old noisy inline path alongside the clean one.
-        if context.get("promotion_store") is not None:
-            enable_pseudo = False
-            enable_novel = False
+        # With the D1/D2 promotion store active the engine supervises PROMOTED
+        # samples as labeled; inline pseudo-CE must skip those IDs but stays
+        # ON for everything else. Disabling it wholesale (the old behaviour)
+        # removed ALL inline novel supervision — D2 promotes 0/12 rounds —
+        # and regressed novel acc by ~7 points in every Full run.
+        promoted_ids: frozenset[int] = frozenset()
+        store = context.get("promotion_store")
+        if store is not None:
+            promoted_ids = frozenset(int(sid) for sid in store.export_state())
         epoch = int(context.get("epoch", 0))
         total_epochs = int(context.get("total_epochs", 200))
         pseudo_warmup = int(
@@ -279,6 +282,19 @@ class BaConAdapter:
 
             u_logits_v0 = logits_by_view[0][unlabeled_mask]
             u_logits_v1 = logits_by_view[1][unlabeled_mask]
+
+            # Exclude promoted sample IDs from inline pseudo-CE (they are
+            # already supervised through the engine's labeled_mask override).
+            if promoted_ids:
+                sid_unl = batch.sample_ids[unlabeled_mask].cpu().tolist()
+                promoted_view = torch.as_tensor(
+                    [int(sid) in promoted_ids for sid in sid_unl],
+                    device=u_logits_v0.device,
+                ).bool()
+                if promoted_view.any():
+                    keep = ~promoted_view
+                    u_logits_v0 = u_logits_v0[keep]
+                    u_logits_v1 = u_logits_v1[keep]
 
             with torch.no_grad():
                 probs_v0 = F.softmax(u_logits_v0 / pseudo_temp, dim=-1)
@@ -402,6 +418,23 @@ class BaConAdapter:
                 num_known_classes=int(context["num_known_classes"]),
             )
             raw_t = torch.as_tensor(raw, dtype=torch.float32, device=device)
+            # Known-class frequencies are EXACTLY known: the long-tail
+            # protocol builds the labeled split from the per-class support.
+            # Soft-count estimates of known classes had correlation ~0.2 with
+            # the true counts (capacity targets assigned almost randomly).
+            # Novel classes stay parametric. Feeds capacity targets and
+            # warm-start only; logit adjustment stays off.
+            known_bincount = np.bincount(
+                targets[
+                    (labeled)
+                    & (targets >= 0)
+                    & (targets < int(context["num_known_classes"]))
+                ].astype(np.int64),
+                minlength=int(context["num_known_classes"]),
+            ).astype(np.float64)
+            raw_t[: int(context["num_known_classes"])] = torch.as_tensor(
+                known_bincount, dtype=torch.float32, device=device
+            )
             previous = context.get("estimated_frequencies")
             if previous is not None:
                 ema = float(config.get("frequency_estimation_ema", 0.5))

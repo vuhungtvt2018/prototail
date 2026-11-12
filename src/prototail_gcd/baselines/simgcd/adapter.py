@@ -3,6 +3,7 @@
 import math
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -242,6 +243,18 @@ class SimGCDAdapter:
                     num_known_classes=int(context["num_known_classes"]),
                 )
                 raw_t = torch.as_tensor(raw, dtype=torch.float32, device=device)
+                # Known-class frequencies are EXACTLY known: the long-tail
+                # protocol builds the labeled split from the per-class
+                # support. Soft-count estimates of known classes had
+                # correlation ~0.2 with the true counts (capacity targets
+                # assigned almost randomly). Novel classes stay parametric.
+                known_bincount = np.bincount(
+                    targets[(labeled) & (targets >= 0) & (targets < int(context["num_known_classes"]))].astype(np.int64),
+                    minlength=int(context["num_known_classes"]),
+                ).astype(np.float64)
+                raw_t[: int(context["num_known_classes"])] = torch.as_tensor(
+                    known_bincount, dtype=torch.float32, device=device
+                )
                 # EMA across estimation rounds stabilizes early-epoch noise.
                 previous = context.get("estimated_frequencies")
                 if previous is not None:
@@ -420,13 +433,20 @@ def compute_simgcd_losses(
         config.get("enable_novel_pseudo", False)
         or context.get("enable_novel_pseudo", False)
     )
-    # Paper D1/D2 promotion store supersedes the inline pseudo-CE: the store
-    # promotes vetted samples (persistent, never relabeled) as supervised
-    # targets in the engine. Running both mechanisms at once injects the old
-    # noisy inline path alongside the clean one.
-    if context.get("promotion_store") is not None:
-        enable_pseudo = False
-        enable_novel = False
+    # With the D1/D2 promotion store active the engine already supervises the
+    # PROMOTED samples as labeled data, so the inline pseudo-CE must skip
+    # those sample IDs to avoid double supervision. It must NOT be disabled
+    # wholesale: disabling it also killed inline NOVEL pseudo supervision for
+    # every Full run (D2 promoted 0/12 rounds → zero novel supervision,
+    # novel acc regression 46.3→37.5 starting exactly at ep30).
+    promoted_ids = frozenset(
+        int(sid)
+        for sid in (
+            context.get("promotion_store").export_state()
+            if context.get("promotion_store") is not None
+            else {}
+        )
+    )
     epoch = int(context.get("epoch", 0))
     total_epochs = int(context.get("total_epochs", 200))
     pseudo_warmup = int(
@@ -446,6 +466,19 @@ def compute_simgcd_losses(
 
         u_logits_v0 = logits_by_view[0][unlabeled_mask]
         u_logits_v1 = logits_by_view[1][unlabeled_mask]
+
+        # Exclude promoted sample IDs from inline pseudo-CE (they are already
+        # supervised through the engine's labeled_mask override).
+        if promoted_ids:
+            sid_unl = batch.sample_ids[unlabeled_mask].cpu().tolist()
+            promoted_view = torch.as_tensor(
+                [int(sid) in promoted_ids for sid in sid_unl],
+                device=u_logits_v0.device,
+            ).bool()
+            if promoted_view.any():
+                keep = ~promoted_view
+                u_logits_v0 = u_logits_v0[keep]
+                u_logits_v1 = u_logits_v1[keep]
 
         with torch.no_grad():
             probs_v0 = F.softmax(u_logits_v0 / pseudo_temp, dim=-1)

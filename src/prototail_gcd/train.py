@@ -572,13 +572,21 @@ def main(allowed_baseline: str | None = None) -> None:
 
     # Teacher init must precede the banner below ([7] line reads `teacher`).
     known_class_count_teacher = len(dataset.known_class_ids)
+    # GlobalEMATeacher (m0=0.996) destroys the SimGCD backbone: SimGCD shares
+    # one backbone for representation and logits, so a teacher that barely
+    # moves during the first epochs (2768 samples / batch 128 ≈ 21 steps per
+    # epoch) anchors the DistillLoss to a near-random target — gk All dropped
+    # 57.8→~44 across every Full run with the teacher on. BaCon survives
+    # because it keeps a separate classification_backbone. Default: OFF for
+    # simgcd, ON for bacon. Explicit --use-momentum-teacher/--no-... wins.
+    teacher_default = baseline_name != "simgcd"
     use_teacher = (
         arguments.use_momentum_teacher is True
         or (
             arguments.use_momentum_teacher is None
             and bool(
                 baseline_config.get("use_momentum_teacher", False)
-                or detected_config.startswith("Full")
+                or (detected_config.startswith("Full") and teacher_default)
             )
         )
     )
