@@ -241,29 +241,64 @@ class PaperDualSelector:
         accepted_total, accepted_clusters = 0, 0
         predictions = probs.argmax(axis=1)
         existing = store.export_state()
+        # Per-condition diagnostics: D2 rejected every cluster in 12/12 rounds
+        # across the 2026-11-12 cars wave with zero visibility into WHICH gate
+        # blocked promotion. Track the strongest rejection reason per condition.
+        diag = {
+            "sizes_lt_10": 0,
+            "low_stability": 0,
+            "low_silhouette": 0,
+            "no_novel_pred": 0,
+            "low_agreement": 0,
+            "low_overlap": 0,
+            "all_in_store": 0,
+            "max_stability": 0.0,
+            "max_agreement": 0.0,
+            "max_sil_ratio": 0.0,
+            "novel_candidate_clusters": 0,
+        }
         for cluster in range(k):
-            if cluster in known_clusters or size_a[cluster] < 10:
+            if cluster in known_clusters:
                 continue
-            if stability[cluster] < 0.6 or sil_means[cluster] < median_silhouette:
+            if size_a[cluster] < 10:
+                diag["sizes_lt_10"] += 1
+                continue
+            if stability[cluster] < 0.6:
+                diag["low_stability"] += 1
+                diag["max_stability"] = max(diag["max_stability"], float(stability[cluster]))
+                continue
+            diag["max_stability"] = max(diag["max_stability"], float(stability[cluster]))
+            if sil_means[cluster] < median_silhouette:
+                diag["low_silhouette"] += 1
+                if median_silhouette > 0:
+                    diag["max_sil_ratio"] = max(
+                        diag["max_sil_ratio"], float(sil_means[cluster] / median_silhouette)
+                    )
                 continue
             members = np.flatnonzero((labels_a == cluster) & unlabeled)
             member_predictions = predictions[members]
             novel_preds = member_predictions[member_predictions >= self.n_known]
             if len(novel_preds) == 0:
+                diag["no_novel_pred"] += 1
                 continue
+            diag["novel_candidate_clusters"] += 1
             majority_count = np.bincount(novel_preds, minlength=k)
             novel_id = int(np.argmax(majority_count))
             agreement = float(majority_count[novel_id] / len(members))
+            diag["max_agreement"] = max(diag["max_agreement"], agreement)
             if agreement < 0.7:
+                diag["low_agreement"] += 1
                 continue
             prior_ids = {int(sample_id) for sample_id, old_class in existing.items() if old_class == novel_id}
             if prior_ids:
                 member_ids = {int(ids[idx]) for idx in members}
                 overlap = len(prior_ids & member_ids) / len(prior_ids | member_ids)
                 if overlap < 0.3:
+                    diag["low_overlap"] += 1
                     continue
             remaining = np.asarray([i for i in members if int(ids[i]) not in existing], dtype=np.int64)
             if len(remaining) == 0:
+                diag["all_in_store"] += 1
                 continue
             # Rank by probability assigned to the accepted majority output.
             best = remaining[np.argsort(-probs[remaining, novel_id], kind="stable")][:200]
@@ -273,6 +308,17 @@ class PaperDualSelector:
                 accepted_clusters += 1
                 accepted_total += accepted_now
                 existing.update(dict(pairs))
+        diag["accepted"] = accepted_total
+        print(
+            f"[D2 DIAG] epoch={epoch} novel_candidates={diag['novel_candidate_clusters']} "
+            f"accepted={accepted_total} | blocks: size<10={diag['sizes_lt_10']} "
+            f"stability={diag['low_stability']} silhouette={diag['low_silhouette']} "
+            f"agreement={diag['low_agreement']} overlap={diag['low_overlap']} "
+            f"all_in_store={diag['all_in_store']} | "
+            f"max_stability={diag['max_stability']:.2f} max_agreement={diag['max_agreement']:.2f} "
+            f"max_sil_ratio={diag['max_sil_ratio']:.2f} dbi={dbi:.3f}",
+            flush=True,
+        )
         if accepted_total:
             self.previous_accepted_dbi = dbi
         return {"accepted": accepted_total, "clusters": accepted_clusters, "dbi": dbi}

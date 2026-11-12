@@ -38,6 +38,7 @@ method:
   enabled: false
   config:
     num_slots: 3
+    top_k_slots: 2
     part_weight: 0.5
     part_loss_weight: 1.0
     temperature: 0.1

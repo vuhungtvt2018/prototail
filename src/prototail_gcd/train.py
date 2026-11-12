@@ -338,6 +338,12 @@ def main(allowed_baseline: str | None = None) -> None:
         help="Explicitly disable gate warm-start even in tail-aware configurations",
     )
     parser.add_argument(
+        "--selector-end-epoch",
+        type=int,
+        default=None,
+        help="Last epoch allowed to run D1/D2 promotion rounds (default 120)",
+    )
+    parser.add_argument(
         "--known-frequency-mapping",
         choices=["direct_hungarian", "bacon_rank"],
         default="direct_hungarian",
@@ -609,10 +615,16 @@ def main(allowed_baseline: str | None = None) -> None:
     # (Full / Full_wo_Tail). The standalone "Pseudo" ablation keeps the
     # original inline pseudo-CE unchanged so the comparison stays clean.
     promotion_store = PromotionStore(dataset.num_classes, known_class_count_teacher)
+    # Late-run promotions degrade accuracy (2026-11-12 wave: bacon peaked
+    # ep15-55 then lost 2.7-5.0 pts; late D1 promotions inject noisy labels
+    # too close to the final eval to be consolidated). Default schedule ends
+    # promotions at epoch 120; the tail epochs train on what was accepted.
+    selector_end_epoch = int(arguments.selector_end_epoch) if arguments.selector_end_epoch is not None else 120
     selector = PaperDualSelector(
         n_known=known_class_count_teacher,
         n_classes=dataset.num_classes,
         seed=seed,
+        known_epochs=tuple(e for e in range(30, 200, 10) if e <= selector_end_epoch),
     )
     if not method_enabled:
         # Empty store + disabled selector: adapters see no promotion_store

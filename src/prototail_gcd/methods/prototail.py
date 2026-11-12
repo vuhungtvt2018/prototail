@@ -52,10 +52,13 @@ class PartPrototypeBank(nn.Module):
         num_classes: int,
         num_slots: int,
         feature_dim: int,
+        *,
+        top_k_slots: int | None = None,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.num_slots = num_slots
+        self.top_k_slots = int(top_k_slots) if top_k_slots else 0
         prototypes = torch.empty(num_classes * num_slots, feature_dim)
         nn.init.orthogonal_(prototypes)
         self.register_buffer(
@@ -104,9 +107,29 @@ class PartPrototypeBank(nn.Module):
             parts,
             normalized_prototypes,
         )
-        scores = (similarities * gates.unsqueeze(0)).sum(dim=-1)
-        scores = scores / (gates.sum(dim=-1).unsqueeze(0) + 1e-6)
+        # Top-k hard gate selection with a straight-through estimator.
+        # Soft multiply-then-divide (scores = sum(sim*g) / sum(g)) is invariant
+        # to a uniform gate rescale, so every slot's gradient was identical and
+        # gates froze (camera: gate mean 0.562->0.572 over 190 epochs, max
+        # 0.980 constant). Hard selection makes the CLOSED slots' gradient
+        # exactly zero and the OPEN slots' gradient the true score gradient,
+        # which breaks the symmetry and lets capacity targets actually move
+        # gates. Backward uses the soft gates (straight-through); forward uses
+        # the binary top-k mask.
+        hard_mask = self._topk_mask(gates)
+        effective = hard_mask + (gates - gates.detach())
+        scores = (similarities * effective.unsqueeze(0)).sum(dim=-1)
+        scores = scores / (hard_mask.float().sum(dim=-1).unsqueeze(0) + 1e-6)
         return scores, similarities, gates
+
+    def _topk_mask(self, gates: torch.Tensor) -> torch.Tensor:
+        """Binary [num_classes, num_slots] mask of the top-k open slots."""
+        k = int(getattr(self, "top_k_slots", 0) or self.num_slots)
+        k = max(1, min(k, self.num_slots))
+        if k >= self.num_slots:
+            return torch.ones_like(gates)
+        topk = gates.topk(k, dim=-1).indices
+        return torch.zeros_like(gates).scatter_(1, topk, 1.0)
 
     @torch.no_grad()
     def update_known(
@@ -168,6 +191,11 @@ class ProtoTailComponents(nn.Module):
             num_classes,
             slots,
             feature_dim,
+            top_k_slots=(
+                int(config["top_k_slots"])
+                if "top_k_slots" in config
+                else None
+            ),
         )
 
 
@@ -562,10 +590,18 @@ class ProtoTailPlugin:
         if feature_mode == "original_parts_concat":
             # Class-independent mean gate for pooling: class-conditioned gates
             # rotate the part feature space per predicted class and confuse
-            # the KMeans eval head.
-            gates = self._components().prototypes.gates().mean(dim=0)
-            pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
-            pooled_parts = pooled_parts / gates.sum().clamp_min(1e-6)
+            # the KMeans eval head. Consistent with training, only the top-k
+            # open slots contribute to the pool.
+            bank = self._components().prototypes
+            gates = bank.gates().mean(dim=0)
+            if bank.top_k_slots and bank.top_k_slots < bank.num_slots:
+                topk = gates.topk(int(bank.top_k_slots)).indices
+                mask = torch.zeros_like(gates).scatter_(0, topk, 1.0)
+                pooled_parts = (parts * mask.unsqueeze(-1)).sum(dim=1)
+                pooled_parts = pooled_parts / mask.sum().clamp_min(1e-6)
+            else:
+                pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
+                pooled_parts = pooled_parts / gates.sum().clamp_min(1e-6)
             global_for_eval = F.normalize(global_features, dim=-1)
             part_for_eval = F.normalize(pooled_parts, dim=-1)
         elif feature_mode == "legacy_concat":

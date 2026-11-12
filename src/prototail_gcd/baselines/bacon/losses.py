@@ -119,58 +119,54 @@ def estimate_class_frequencies_parametric(
     *,
     num_classes: int,
     num_known_classes: int,
+    soft_temperature: float = 1.0,
 ) -> np.ndarray:
-    """Estimate per-class sample frequencies from parametric logits.
+    """Estimate per-class sample frequencies from parametric logits (soft-count).
 
-    1. Predict argmax class for every sample (known AND novel heads share the
-       same classifier, so novel classes are covered too).
-    2. Align predicted-class IDs to KNOWN class IDs via Hungarian matching on
+    1. Align predicted-class IDs to KNOWN class IDs via Hungarian matching on
        the labeled subset only — no novel ground truth is used.
-    3. Count mapped predictions over ALL samples.
-    4. Unmatched predicted classes (the classifier's novel heads, which have
-       no labeled anchor) distribute their REAL argmax counts over the novel
-       classes, largest mass first. Flooring them at 1 collapsed every novel
-       class to the minimum support and inverted the tail-aware targets.
-
-    Unlike the KMeans cluster-size estimator this does not flatten the
-    distribution: the classifier already separates known/novel classes that
-    KMeans merges, so head/tail ratios survive.
+    2. Soft-count: every sample contributes its softmax probability vector to
+       the mass of every class, so classes the argmax never wins still
+       accumulate real mass. Hard argmax counting collapsed the tail to the
+       floor (tail=1 in all 2026-11-12 cars/cub logs) whenever the classifier
+       concentrated its predictions early in training.
+    3. The Hungarian alignment permutes the soft-count matrix so mass lands on
+       true class IDs; novel classes are anchored by their predicted columns
+       (largest mass first), which keeps head/tail structure without GT.
     """
-    predictions = logits.argmax(axis=1).astype(np.int64)
-    labeled_predictions = predictions[labeled]
-    labeled_targets = targets[labeled]
     if not np.any(labeled):
         raise ValueError("parametric frequency estimation requires labeled samples")
-    if np.any(labeled_targets < 0):
-        raise ValueError("labeled targets must be non-negative class IDs")
-
-    contingency = np.zeros((num_classes, num_known_classes), dtype=np.int64)
     known_labeled = labeled & (targets >= 0) & (targets < num_known_classes)
     if not np.any(known_labeled):
         raise ValueError("parametric frequency estimation requires labeled known samples")
-    np.add.at(
-        contingency,
-        (predictions[known_labeled], targets[known_labeled]),
-        1,
+
+    scaled = logits / float(soft_temperature)
+    scaled = scaled - scaled.max(axis=1, keepdims=True)
+    exp_logits = np.exp(scaled)
+    probs = exp_logits / exp_logits.sum(axis=1, keepdims=True)
+    # Known columns only for the alignment; novel columns ranked by total mass.
+    known_probs = probs[:, :num_known_classes]
+    contingency = known_probs[known_labeled].T @ (
+        (targets[known_labeled][:, None] == np.arange(num_known_classes)[None, :]).astype(np.float64)
     )
     pred_rows, class_cols = linear_sum_assignment(-contingency)
     prediction_to_class = {
         int(pred): int(cls) for pred, cls in zip(pred_rows, class_cols)
     }
 
+    soft_counts = probs.sum(axis=0)
     estimate = np.zeros(num_classes, dtype=np.float64)
-    counts = np.bincount(predictions, minlength=num_classes)
-    matched_predictions = set(prediction_to_class)
     for pred, cls in prediction_to_class.items():
-        estimate[cls] = counts[pred]
+        estimate[cls] = soft_counts[pred]
     # Novel classes have no labeled anchor: assign the unmatched predicted
-    # classes' actual counts, largest first, so novel support reflects data.
-    unmatched_counts = sorted(
-        (int(counts[p]) for p in range(num_classes) if p not in matched_predictions),
+    # columns' real soft mass, largest first, so novel support reflects data.
+    matched_predictions = set(prediction_to_class)
+    unmatched_mass = sorted(
+        (float(soft_counts[p]) for p in range(num_classes) if p not in matched_predictions),
         reverse=True,
     )
     novel_classes = list(range(num_known_classes, num_classes))
-    for novel_cls, mass in zip(novel_classes, unmatched_counts):
+    for novel_cls, mass in zip(novel_classes, unmatched_mass):
         estimate[novel_cls] = float(mass)
     # Floor at 1 so capacity targets and logit adjustment stay finite.
     estimate = np.maximum(estimate, 1.0)
