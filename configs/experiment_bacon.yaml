@@ -25,7 +25,7 @@ baseline:
       warmup_teacher_temp_epochs: 30
       distribution_estimate_interval: 10
       distribution_cluster_seed: 0
-      frequency_estimation_mode: parametric_hungarian
+      frequency_estimation_mode: labeled_bincount
       frequency_estimation_ema: 0.5
       logit_adjustment_strength: 0.5
       use_logit_adjust: false
