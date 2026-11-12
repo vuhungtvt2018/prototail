@@ -157,53 +157,6 @@ def estimate_class_frequencies_parametric(
     return estimate
 
 
-def estimate_class_frequencies_labeled(
-    loader: Any,
-    *,
-    num_classes: int,
-    num_known_classes: int,
-) -> "torch.Tensor":
-    """Exact per-class support for KNOWN classes, from labeled GT only.
-
-    Known classes: exact bincount over labeled targets of the distribution
-    loader (labels are available by protocol). Novel classes: uniform
-    estimate at the mean labeled-known support — novel counts are unknowable
-    without ground truth, and uniformity is the standard GCD assumption.
-
-    Unlike the KMeans/parametric estimators this is deterministic and exact
-    for the known side: the head/tail structure matches the true imbalance
-    and no longer drifts across re-estimation rounds, so gate warm-start and
-    capacity targets stop chasing a moving target.
-    """
-    counts = torch.zeros(num_classes, dtype=torch.float32)
-    for batch in loader:
-        targets = getattr(batch, "known_targets", None)
-        if targets is None:
-            targets = batch["known_targets"]
-        mask = getattr(batch, "labeled_mask", None)
-        if mask is None:
-            mask = batch["labeled_mask"]
-        labeled_targets = torch.as_tensor(targets).long()[
-            torch.as_tensor(mask).bool()
-        ]
-        valid = labeled_targets >= 0
-        counts += torch.bincount(
-            labeled_targets[valid], minlength=num_classes
-        ).float()
-    known_counts = counts[:num_known_classes]
-    if not known_counts.numel() or known_counts.sum() <= 0:
-        raise ValueError(
-            "labeled-bincount estimation requires labeled known samples"
-        )
-    frequencies = counts.clone()
-    frequencies[:num_known_classes] = known_counts.clamp_min(1.0)
-    # Novel: uniform at the floored mean labeled-known support — empty known
-    # classes still count as existing (>=1) so the novel scale stays honest.
-    uniform_novel = float(frequencies[:num_known_classes].mean())
-    frequencies[num_known_classes:] = uniform_novel
-    return frequencies
-
-
 def estimate_class_frequencies(
     model: Any,
     loader: Any,

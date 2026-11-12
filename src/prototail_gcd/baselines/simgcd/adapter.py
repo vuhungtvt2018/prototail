@@ -220,22 +220,7 @@ class SimGCDAdapter:
         device = next(model.backbone.parameters()).device
         estimation_mode = str(config.get("frequency_estimation_mode", "kmeans"))
         try:
-            if estimation_mode == "labeled_bincount":
-                from prototail_gcd.baselines.bacon.losses import (
-                    estimate_class_frequencies_labeled,
-                )
-                frequencies = estimate_class_frequencies_labeled(
-                    loader,
-                    num_classes=int(context["num_classes"]),
-                    num_known_classes=int(context["num_known_classes"]),
-                )
-                print(
-                    f"[FREQ ESTIMATE] Epoch {epoch + 1} mode=labeled_bincount "
-                    f"head={frequencies.max().item():.0f} tail={frequencies.min().item():.0f} "
-                    f"ratio={frequencies.max().item() / max(frequencies.min().item(), 1e-6):.1f}",
-                    flush=True,
-                )
-            elif estimation_mode == "parametric_hungarian":
+            if estimation_mode == "parametric_hungarian":
                 import numpy as np
                 from prototail_gcd.baselines.bacon.losses import (
                     _collect_logits_and_labels,
