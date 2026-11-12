@@ -2,10 +2,12 @@ from importlib import import_module
 from pathlib import Path
 import os
 import shutil
+import ssl
 import sys
 import tempfile
 import unittest
 from unittest import mock
+from urllib.error import URLError
 
 
 def load_module():
@@ -123,9 +125,107 @@ class EnsureOfflineCheckpointTests(_TempDirsTestCase):
         self.assertEqual(staged, self.hub_dir / "checkpoints" / "dinov2_vitb14_pretrain.pth")
 
 
+class _FakeResponse:
+    """Minimal urlopen stand-in: context manager with chunked ``read``."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            data, self._data = self._data, b""
+        else:
+            data, self._data = self._data[:size], self._data[size:]
+        return data
+
+    def close(self):
+        self._data = b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class FetchWeightsFromUrlTests(_TempDirsTestCase):
+    def setUp(self):
+        super().setUp()
+        self.hub_dir = self.tmp_root / "hub"
+        self.expected = self.hub_dir / "checkpoints" / "dinov2_vitb14_pretrain.pth"
+
+    def test_verified_download_writes_cache_file(self):
+        response = _FakeResponse(self.weights_bytes)
+        with mock.patch.object(
+            dino_backbone.urllib.request, "urlopen", return_value=response
+        ) as urlopen:
+            staged = dino_backbone.fetch_weights_from_url(
+                ENTRYPOINT, pretrained=True, hub_dir=self.hub_dir
+            )
+        self.assertEqual(staged, self.expected)
+        self.assertEqual(self.expected.read_bytes(), self.weights_bytes)
+        args, kwargs = urlopen.call_args
+        self.assertEqual(args[0], dino_backbone._WEIGHT_URLS[ENTRYPOINT])
+        self.assertNotIn("context", kwargs)
+        self.assertFalse(self.expected.with_name(self.expected.name + ".part").exists())
+
+    def test_ssl_certificate_error_retries_unverified(self):
+        expired = ssl.SSLCertVerificationError(
+            1, "certificate verify failed: certificate has expired"
+        )
+        response = _FakeResponse(self.weights_bytes)
+        contexts = []
+
+        def urlopen_side_effect(url, timeout=None, context=None):
+            contexts.append(context)
+            if context is None:
+                raise URLError(expired)
+            return response
+
+        with mock.patch.object(
+            dino_backbone.urllib.request, "urlopen", side_effect=urlopen_side_effect
+        ):
+            staged = dino_backbone.fetch_weights_from_url(
+                ENTRYPOINT, pretrained=True, hub_dir=self.hub_dir
+            )
+        self.assertEqual(staged, self.expected)
+        self.assertEqual(self.expected.read_bytes(), self.weights_bytes)
+        self.assertEqual(len(contexts), 2)
+        self.assertIsNone(contexts[0])
+        self.assertEqual(contexts[1].verify_mode, ssl.CERT_NONE)
+
+    def test_persistent_failure_returns_none_and_cleans_part(self):
+        with mock.patch.object(
+            dino_backbone.urllib.request,
+            "urlopen",
+            side_effect=URLError(OSError("no route to host")),
+        ):
+            staged = dino_backbone.fetch_weights_from_url(
+                ENTRYPOINT, pretrained=True, hub_dir=self.hub_dir
+            )
+        self.assertIsNone(staged)
+        self.assertFalse(self.expected.exists())
+        self.assertFalse(
+            self.expected.with_name(self.expected.name + ".part").exists()
+        )
+
+    def test_not_pretrained_returns_none(self):
+        self.assertIsNone(
+            dino_backbone.fetch_weights_from_url(
+                ENTRYPOINT, pretrained=False, hub_dir=self.hub_dir
+            )
+        )
+
+
 class LoadBackboneOfflineTests(_TempDirsTestCase):
     def test_fast_fail_offline_without_assets(self):
         with mock.patch.object(dino_backbone, "find_local_repo", return_value=None), \
+            mock.patch.object(
+                dino_backbone, "ensure_offline_checkpoint", return_value=None
+            ), \
+            mock.patch.object(
+                dino_backbone, "fetch_weights_from_url", return_value=None
+            ), \
             mock.patch.object(dino_backbone, "probe_internet", return_value=False), \
             mock.patch.object(dino_backbone.torch.hub, "load") as hub_load:
             with self.assertRaises(RuntimeError) as ctx:
@@ -160,6 +260,9 @@ class LoadBackboneOfflineTests(_TempDirsTestCase):
         with mock.patch.object(dino_backbone, "find_local_repo", return_value=repo), \
             mock.patch.object(
                 dino_backbone, "ensure_offline_checkpoint", return_value=None
+            ), \
+            mock.patch.object(
+                dino_backbone, "fetch_weights_from_url", return_value=None
             ), \
             mock.patch.object(dino_backbone, "probe_internet", return_value=False), \
             mock.patch.object(dino_backbone.torch.hub, "load") as hub_load:

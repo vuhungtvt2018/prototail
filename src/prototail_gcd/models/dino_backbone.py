@@ -11,7 +11,10 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -45,6 +48,24 @@ _CHECKPOINT_FILES = {
     "dinov2_vitb14_reg": "dinov2_vitb14_reg4_pretrain.pth",
 }
 
+# Canonical checkpoint URLs — same basenames as _CHECKPOINT_FILES. Loading
+# them ourselves lets us work around CDN certificate problems that crash
+# torch.hub's internal download (e.g. expired dl.fbaipublicfiles.com certs).
+_WEIGHT_URLS = {
+    "dinov2_vitb14": (
+        "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/"
+        "dinov2_vitb14_pretrain.pth"
+    ),
+    "dinov2_vitb14_reg": (
+        "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/"
+        "dinov2_vitb14_reg4_pretrain.pth"
+    ),
+    "dino_vitb16": (
+        "https://dl.fbaipublicfiles.com/dino/dino_vitb16/dino_vitb16_pretrain/"
+        "dino_vitb16_pretrain.pth"
+    ),
+}
+
 # Kaggle mounts scanned for an offline copy of the repo / checkpoint.
 _KAGGLE_SCAN_ROOTS: tuple[Path, ...] = (
     Path("/kaggle/input"),
@@ -53,7 +74,7 @@ _KAGGLE_SCAN_ROOTS: tuple[Path, ...] = (
 _SCAN_MAX_DEPTH = 3
 _SCAN_DIR_LIMIT = 4000
 
-_OFFLINE_FIX_INSTRUCTIONS = """No Internet connection and no offline DINO backbone assets were found.
+_OFFLINE_FIX_INSTRUCTIONS = """No usable network route to the checkpoint host (DNS unreachable or certificates rejected) and no offline DINO backbone assets were found.
 Fix (pick one):
   1. Kaggle notebook: Settings -> Internet -> ON (requires a phone-verified account).
   2. Attach an offline dataset with the DINOv2 repo + weights:
@@ -226,6 +247,83 @@ def probe_internet(timeout: float = 4.0) -> bool:
         return False
 
 
+def _open_url_certificate_fallback(url: str, timeout: float = 60.0):
+    """Open a URL, retrying without certificate verification on SSL errors.
+
+    Some checkpoint CDNs (dl.fbaipublicfiles.com) ship expired certificates,
+    which makes torch.hub's verified download fail permanently. Retrying with
+    verification disabled is acceptable for a single public checkpoint file
+    whose integrity is enforced by ``load_state_dict(strict=True)`` anyway.
+    """
+    try:
+        return urllib.request.urlopen(url, timeout=timeout)
+    except (urllib.error.URLError, ssl.SSLError) as error:
+        reason = getattr(error, "reason", error)
+        if not isinstance(reason, ssl.SSLError):
+            raise
+        print(
+            f"[DINO Backbone Loader] Certificate verification failed for the "
+            f"checkpoint host ({reason}); retrying WITHOUT certificate "
+            "verification for this file only.",
+            flush=True,
+        )
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return urllib.request.urlopen(url, timeout=timeout, context=context)
+
+
+def fetch_weights_from_url(
+    name: str,
+    pretrained: bool = True,
+    *,
+    hub_dir: Path | None = None,
+    timeout: float = 60.0,
+) -> Path | None:
+    """Pre-fetch the pretrained checkpoint into the torch hub cache.
+
+    Placing the file under ``<hub_dir>/checkpoints/<expected name>`` makes
+    ``torch.hub.load_state_dict_from_url`` hit the cache, so the hubconf
+    never performs its own (verified, brittle) download. Returns the path on
+    success, or None when the download is not applicable or fails.
+    """
+    if not pretrained:
+        return None
+    expected = _CHECKPOINT_FILES.get(name)
+    url = _WEIGHT_URLS.get(name)
+    if expected is None or url is None:
+        return None
+    hub_dir = hub_dir if hub_dir is not None else Path(torch.hub.get_dir())
+    destination = hub_dir / "checkpoints" / expected
+    if destination.is_file() and destination.stat().st_size > 0:
+        return destination
+    staging = destination.with_name(destination.name + ".part")
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with _open_url_certificate_fallback(url, timeout=timeout) as response, \
+                staging.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+        os.replace(staging, destination)
+        size_mb = destination.stat().st_size / 1e6
+        print(
+            f"[DINO Backbone Loader] Fetched checkpoint {expected} "
+            f"({size_mb:.0f} MB) into the hub cache.",
+            flush=True,
+        )
+        return destination
+    except Exception as error:
+        try:
+            if staging.exists():
+                staging.unlink()
+        except OSError:
+            pass
+        print(
+            f"[DINO Backbone Loader] Checkpoint download failed: {error}",
+            flush=True,
+        )
+        return None
+
+
 def load_backbone(
     name: str,
     pretrained: bool = True,
@@ -245,6 +343,10 @@ def load_backbone(
     checkpoint = ensure_offline_checkpoint(
         name, pretrained=pretrained, repo_dir=repo_dir, extra_roots=extra_roots
     )
+    if pretrained and checkpoint is None:
+        # No local copy: try our own download (with certificate-expiry
+        # fallback) BEFORE torch.hub's internal verified download.
+        checkpoint = fetch_weights_from_url(name, pretrained=pretrained)
     if repo_dir is not None:
         if pretrained and checkpoint is None and not probe_internet():
             raise RuntimeError(
