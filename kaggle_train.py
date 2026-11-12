@@ -313,8 +313,35 @@ def main() -> None:
     parser.add_argument("--ablate-adaptive-capacity", "--ablate_adaptive_capacity", dest="ablate_adaptive_capacity", action="store_true", default=False, help="Ablate adaptive capacity")
     parser.add_argument("--enable-pseudo-labeling", "--enable_pseudo_labeling", dest="enable_pseudo_labeling", action="store_true", default=False, help="Enable pseudo labeling")
     parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
+    parser.add_argument(
+        "--pseudo-mode",
+        "--pseudo_mode",
+        dest="pseudo_mode",
+        type=str,
+        choices=["paper", "legacy_ce"],
+        default="paper",
+        help="paper=persistent D1/D2; legacy_ce=old batch pseudo loss",
+    )
+    parser.add_argument(
+        "--d2-min-cluster-size",
+        "--d2_min_cluster_size",
+        dest="d2_min_cluster_size",
+        type=int,
+        default=10,
+        help="Paper default=10; 3 is an experimental LT20/50 redesign",
+    )
+    parser.add_argument("--pseudo-warmup-epochs", "--pseudo_warmup_epochs", dest="pseudo_warmup_epochs", type=int, default=None, help="Override pseudo labeling warmup epochs")
+    parser.add_argument("--pseudo-confidence", "--pseudo_confidence", dest="pseudo_confidence", type=float, default=None, help="Override pseudo confidence threshold")
     parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None, help="Kaggle username/account name override")
     args, unknown_args = parser.parse_known_args()
+    name_map = {
+        "car": "cars",
+        "scars": "cars",
+        "air": "aircraft",
+        "fgvc_aircraft": "aircraft",
+        "cub200": "cub",
+    }
+    args.dataset_name = name_map.get(args.dataset_name.lower(), args.dataset_name.lower())
     if args.use_parts:
         args.enable_prototail = True
 
@@ -384,7 +411,8 @@ def main() -> None:
     print(f"Model Baseline:   {args.baseline.upper()}")
     print(f"Method Plugin:    {'ProtoTail (Enabled)' if args.enable_prototail else 'Pure Baseline'}")
     print(f"Tail-aware Reg:   {'ACTIVE (0.05)' if (args.use_parts and not args.ablate_adaptive_capacity) else 'DISABLED (0.0)'}")
-    print(f"Pseudo-labeling:  {'ACTIVE (D1+D2)' if (args.enable_pseudo_labeling and args.enable_novel_pseudo) else ('ACTIVE (D1)' if args.enable_pseudo_labeling else 'DISABLED')}")
+    print(f"Pseudo-labeling:  {'ACTIVE (D1+D2)' if (args.enable_pseudo_labeling and args.enable_novel_pseudo) else ('ACTIVE (D1)' if args.enable_pseudo_labeling else 'DISABLED')} (mode={args.pseudo_mode}, d2_min={args.d2_min_cluster_size})")
+    print(f"Eval Head / Seed: {args.simgcd_eval_head} / seed={args.seed}")
     print(f"Device:           {args.device} (1x T4 GPU)")
     print(f"Epochs:           {args.epochs}")
     print(f"Batch Size:       {args.batch_size}")
@@ -426,6 +454,10 @@ def main() -> None:
         str(args.num_workers),
         "--seed",
         str(args.seed),
+        "--pseudo-mode",
+        str(args.pseudo_mode),
+        "--d2-min-cluster-size",
+        str(args.d2_min_cluster_size),
     ]
 
     if args.enable_prototail:
@@ -442,6 +474,10 @@ def main() -> None:
         cmd.append("--enable-pseudo-labeling")
     if getattr(args, "enable_novel_pseudo", False):
         cmd.append("--enable-novel-pseudo")
+    if args.pseudo_warmup_epochs is not None:
+        cmd.extend(["--pseudo-warmup-epochs", str(args.pseudo_warmup_epochs)])
+    if args.pseudo_confidence is not None:
+        cmd.extend(["--pseudo-confidence", str(args.pseudo_confidence)])
     if args.lr is not None:
         cmd.extend(["--lr", str(args.lr)])
     if args.fp16:

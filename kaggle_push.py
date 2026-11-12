@@ -118,6 +118,14 @@ def main():
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--eval-interval", "--eval_interval", dest="eval_interval", type=int, default=5)
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--simgcd-eval-head", "--simgcd_eval_head", dest="simgcd_eval_head", choices=["kmeans", "parametric"], default="kmeans")
+    parser.add_argument("--pseudo-mode", "--pseudo_mode", dest="pseudo_mode", choices=["paper", "legacy_ce"], default="paper")
+    parser.add_argument("--d2-min-cluster-size", "--d2_min_cluster_size", dest="d2_min_cluster_size", type=int, default=10)
+    parser.add_argument("--pseudo-warmup-epochs", "--pseudo_warmup_epochs", dest="pseudo_warmup_epochs", type=int, default=None)
+    parser.add_argument("--pseudo-confidence", "--pseudo_confidence", dest="pseudo_confidence", type=float, default=None)
+    parser.add_argument("--run-name", "--run_name", dest="run_name", type=str, default=None)
     parser.add_argument("--kaggle-user", "--kaggle_user", dest="kaggle_user", type=str, default=None)
     parser.add_argument("--dataset-slug", "--dataset_slug", dest="dataset_slug", type=str, default="nguyntrnminhtm/gcd-data")
     parser.add_argument("--dry-run", "--dry_run", dest="dry_run", action="store_true", help="Build kernel locally without pushing")
@@ -149,8 +157,27 @@ def main():
     elif args.config == "Full":
         flags.extend(["--use-parts", "--enable-pseudo-labeling", "--enable-novel-pseudo"])
 
-    exp_name = f"{args.baseline}_{args.dataset_name}_{args.config}_imb{args.imb_ratio}"
-    kernel_slug = f"prototail-{args.baseline}-{args.dataset_name}-{args.config.lower()}-imb{args.imb_ratio}".replace("_", "-")
+    flags.extend(["--pseudo-mode", str(args.pseudo_mode)])
+    flags.extend(["--d2-min-cluster-size", str(args.d2_min_cluster_size)])
+    flags.extend(["--simgcd-eval-head", str(args.simgcd_eval_head)])
+    flags.extend(["--seed", str(args.seed)])
+    if args.lr is not None:
+        flags.extend(["--lr", str(args.lr)])
+    if args.pseudo_warmup_epochs is not None:
+        flags.extend(["--pseudo-warmup-epochs", str(args.pseudo_warmup_epochs)])
+    if args.pseudo_confidence is not None:
+        flags.extend(["--pseudo-confidence", str(args.pseudo_confidence)])
+
+    name_parts = [args.baseline, args.dataset_name, args.config]
+    if args.pseudo_mode != "paper":
+        name_parts.append(args.pseudo_mode)
+    if args.d2_min_cluster_size != 10:
+        name_parts.append(f"min{args.d2_min_cluster_size}")
+    name_parts.append(f"imb{args.imb_ratio}")
+    if args.seed != 0:
+        name_parts.append(f"s{args.seed}")
+    exp_name = args.run_name or "_".join(name_parts)
+    kernel_slug = f"prototail-{exp_name.lower()}".replace("_", "-")
 
     # Staging folder for kernel push
     staging_dir = repo_root / "build_kaggle_kernel"
