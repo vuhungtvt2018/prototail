@@ -124,9 +124,13 @@ def estimate_class_frequencies_parametric(
 
     1. Predict argmax class for every sample (known AND novel heads share the
        same classifier, so novel classes are covered too).
-    2. Align predicted-class IDs to true class IDs via Hungarian matching on
+    2. Align predicted-class IDs to KNOWN class IDs via Hungarian matching on
        the labeled subset only — no novel ground truth is used.
     3. Count mapped predictions over ALL samples.
+    4. Unmatched predicted classes (the classifier's novel heads, which have
+       no labeled anchor) distribute their REAL argmax counts over the novel
+       classes, largest mass first. Flooring them at 1 collapsed every novel
+       class to the minimum support and inverted the tail-aware targets.
 
     Unlike the KMeans cluster-size estimator this does not flatten the
     distribution: the classifier already separates known/novel classes that
@@ -140,8 +144,15 @@ def estimate_class_frequencies_parametric(
     if np.any(labeled_targets < 0):
         raise ValueError("labeled targets must be non-negative class IDs")
 
-    contingency = np.zeros((num_classes, num_classes), dtype=np.int64)
-    np.add.at(contingency, (labeled_predictions, labeled_targets), 1)
+    contingency = np.zeros((num_classes, num_known_classes), dtype=np.int64)
+    known_labeled = labeled & (targets >= 0) & (targets < num_known_classes)
+    if not np.any(known_labeled):
+        raise ValueError("parametric frequency estimation requires labeled known samples")
+    np.add.at(
+        contingency,
+        (predictions[known_labeled], targets[known_labeled]),
+        1,
+    )
     pred_rows, class_cols = linear_sum_assignment(-contingency)
     prediction_to_class = {
         int(pred): int(cls) for pred, cls in zip(pred_rows, class_cols)
@@ -149,10 +160,19 @@ def estimate_class_frequencies_parametric(
 
     estimate = np.zeros(num_classes, dtype=np.float64)
     counts = np.bincount(predictions, minlength=num_classes)
+    matched_predictions = set(prediction_to_class)
     for pred, cls in prediction_to_class.items():
         estimate[cls] = counts[pred]
-    # Predicted classes that received no labeled anchor keep zero mass;
-    # floor at 1 so capacity targets and logit adjustment stay finite.
+    # Novel classes have no labeled anchor: assign the unmatched predicted
+    # classes' actual counts, largest first, so novel support reflects data.
+    unmatched_counts = sorted(
+        (int(counts[p]) for p in range(num_classes) if p not in matched_predictions),
+        reverse=True,
+    )
+    novel_classes = list(range(num_known_classes, num_classes))
+    for novel_cls, mass in zip(novel_classes, unmatched_counts):
+        estimate[novel_cls] = float(mass)
+    # Floor at 1 so capacity targets and logit adjustment stay finite.
     estimate = np.maximum(estimate, 1.0)
     return estimate
 

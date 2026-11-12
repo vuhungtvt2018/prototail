@@ -145,18 +145,35 @@ class PaperDualSelector:
         # Do not reaccept original labeled or previously promoted IDs.
         already_used = np.isin(snap.sample_ids, np.asarray(list(promoted), dtype=np.int64))
         eligible = (~pool) & (~already_used)
+        # Anti-over-promotion guards (2025-11 cars runs: single head classes
+        # absorbed 117-252 samples per round and the store grew past the
+        # entire unlabeled-known pool, silently converting novel samples to
+        # known targets and collapsing novel acc by ~11 points):
+        #   - each known class is promoted in at most ONE round;
+        #   - at most max_per_class samples per round.
+        exhausted = getattr(self, "_promoted_classes", None)
+        if exhausted is None:
+            exhausted = self._promoted_classes = set()
+        max_per_class = int(getattr(self, "max_known_per_class", 100))
+        total_unlabeled = int((~pool).sum())
+        store_cap = max(1, int(0.3 * total_unlabeled))
+        store_room = store_cap - len(promoted)
         for c in np.argsort(-accuracies, kind="stable"):
-            if accuracies[c] < 0:
+            if accuracies[c] < 0 or int(c) in exhausted:
                 continue
             candidate_indices = np.flatnonzero(eligible & (preds == c))
             if not len(candidate_indices):
                 continue
-            n_keep = min(500, int(np.ceil(0.8 * len(candidate_indices))))
+            n_keep = min(max_per_class, int(np.ceil(0.8 * len(candidate_indices))))
             sorted_indices = candidate_indices[
                 np.argsort(-snap.probs[candidate_indices, c], kind="stable")
-            ][:n_keep]
+            ][:n_keep][:max(0, store_room)]
+            if not len(sorted_indices):
+                return {"accepted": 0, "reason": "store_cap_reached", "store_cap": store_cap}
             pairs = [(int(snap.sample_ids[i]), int(c)) for i in sorted_indices]
             accepted = store.add_accepted(pairs)
+            if accepted:
+                self._promoted_classes.add(int(c))
             return {"accepted": accepted, "class_id": int(c), "supervised_accuracy": float(accuracies[c])}
         return {"accepted": 0, "reason": "no_eligible_known_predictions"}
 
