@@ -54,6 +54,7 @@ image = (
     .add_local_dir(
         str(LOCAL_REPO),
         remote_path=PROJECT_DIR,
+        copy=True,
         ignore=[
             "outputs",
             "__pycache__",
