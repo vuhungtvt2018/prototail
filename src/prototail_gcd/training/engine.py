@@ -51,41 +51,29 @@ class TrainingEngine:
         self._validate_disjoint_optimizers()
 
     def _validate_disjoint_optimizers(self) -> None:
-        seen_parameter_ids: set[int] = set()
-        shared_method_parameter_ids = (
-            {
-                id(parameter)
-                for parameter in self.method.shared_parameters()
-            }
-            if self.method is not None
-            else set()
-        )
-        for optimizer_name, optimizer in self.optimizers.items():
-            current_ids = {
-                id(parameter)
+        seen: set[int] = set()
+        for name, optimizer in self.optimizers.items():
+            ids = {
+                id(p)
                 for group in optimizer.param_groups
-                for parameter in group["params"]
+                for p in group["params"]
             }
-            overlap = seen_parameter_ids & current_ids
-            is_method_part_optimizer = (
-                self.method is not None
-                and optimizer_name == f"{self.method.name}_part"
-            )
-            if overlap and not (
-                is_method_part_optimizer
-                and overlap <= shared_method_parameter_ids
-            ):
+            overlap = seen & ids
+            if overlap:
                 raise ValueError(
-                    f"optimizer {optimizer_name!r} shares parameters with "
-                    "another optimizer"
+                    f"optimizer {name!r} overlaps earlier optimizer: {len(overlap)} tensors"
                 )
-            seen_parameter_ids.update(current_ids)
+            seen.update(ids)
 
     def train_batch(
         self,
         batch: TrainingBatch,
         epoch: int,
     ) -> dict[str, float]:
+        original_batch = batch
+        store = self.context.get("persistent_promotion_store")
+        if store is not None and self.baseline.name == "simgcd":
+            batch = store.inject(batch)
         device = next(self.model.parameters()).device
         batch = batch.to(device)
         self.model.train()
@@ -167,7 +155,12 @@ class TrainingEngine:
                 self.baseline_config,
             )
         if self.method is not None:
-            self.method.after_optimizer_step(output, batch, step_context)
+            # Only ORIGINAL Known GT labels may update Known EMA.
+            self.method.after_optimizer_step(
+                output,
+                original_batch.to(device),
+                step_context,
+            )
         metrics = {
             name: float(value.detach().item())
             for name, value in losses.items()

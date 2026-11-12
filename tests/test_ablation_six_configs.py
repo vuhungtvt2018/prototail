@@ -121,7 +121,7 @@ class AblationSixConfigsTest(unittest.TestCase):
             "total_epochs": 1,
             "num_classes": self.num_classes,
             "num_known_classes": self.known_classes,
-            "class_frequencies": torch.tensor([10.0, 10.0, 5.0, 2.0, 1.0, 1.0]),
+            "estimated_frequencies": torch.tensor([10.0, 10.0, 5.0, 2.0, 1.0, 1.0]),
             "cluster_criterion": lambda s, t, e: (s - t).square().mean(),
             "enable_pseudo_labeling": enable_pseudo,
             "enable_novel_pseudo": enable_novel,

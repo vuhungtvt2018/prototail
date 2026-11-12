@@ -13,7 +13,6 @@ from prototail_gcd.contracts import (
     PredictionOutput,
     TrainingBatch,
 )
-from prototail_gcd.models.dino_backbone import parse_block_index
 
 
 class LatentPartModule(nn.Module):
@@ -62,6 +61,7 @@ class PartPrototypeBank(nn.Module):
             "prototypes",
             prototypes.view(num_classes, num_slots, feature_dim),
         )
+        self.register_buffer("update_counts", torch.zeros(num_classes, dtype=torch.long))
         self.gate_logits = nn.Parameter(torch.zeros(num_classes, num_slots))
         nn.init.constant_(self.gate_logits, -1.0)
 
@@ -81,6 +81,9 @@ class PartPrototypeBank(nn.Module):
         )
         scores = (similarities * gates.unsqueeze(0)).sum(dim=-1)
         scores = scores / (gates.sum(dim=-1).unsqueeze(0) + 1e-6)
+        # An untouched random prototype is not evidence of a novel class.
+        initialized = self.update_counts.to(scores.device).gt(0)
+        scores = scores.masked_fill(~initialized.unsqueeze(0), 0.0)
         return scores, similarities, gates
 
     @torch.no_grad()
@@ -91,14 +94,19 @@ class PartPrototypeBank(nn.Module):
         momentum: float,
     ) -> None:
         for class_id in torch.unique(labels):
-            mask = labels == class_id
-            centroid = parts[mask].mean(dim=0)
-            class_index = int(class_id.item())
-            self.prototypes[class_index] = F.normalize(
-                momentum * self.prototypes[class_index]
-                + (1.0 - momentum) * centroid,
-                dim=-1,
-            )
+            c = int(class_id.item())
+            if not 0 <= c < self.num_classes:
+                raise ValueError("Known prototype ID out of range")
+            centroid = parts[labels == class_id].mean(dim=0)
+            if int(self.update_counts[c].item()) == 0:
+                self.prototypes[c] = F.normalize(centroid, dim=-1)
+            else:
+                self.prototypes[c] = F.normalize(
+                    momentum * self.prototypes[c]
+                    + (1.0 - momentum) * centroid,
+                    dim=-1,
+                )
+            self.update_counts[c] += 1
 
     @torch.no_grad()
     def update_novel(
@@ -109,20 +117,28 @@ class PartPrototypeBank(nn.Module):
         *,
         threshold: float,
         momentum: float,
+        min_novel_class_id: int,
     ) -> None:
         for class_id in torch.unique(labels):
+            c = int(class_id.item())
+            if c < min_novel_class_id:
+                continue  # Unlabeled pseudo IDs must never overwrite Known bank.
+            if c >= self.num_classes:
+                raise ValueError("Novel prototype ID out of range")
             mask = (labels == class_id) & (confidence > threshold)
-            if not torch.any(mask):
+            if not bool(mask.any()):
                 continue
-            weights = confidence[mask, None, None]
-            centroid = (parts[mask] * weights).sum(dim=0)
-            centroid = centroid / weights.sum(dim=0).clamp_min(1e-6)
-            class_index = int(class_id.item())
-            self.prototypes[class_index] = F.normalize(
-                momentum * self.prototypes[class_index]
-                + (1.0 - momentum) * centroid,
-                dim=-1,
-            )
+            weights = confidence[mask].view(-1, 1, 1)
+            centroid = (parts[mask] * weights).sum(dim=0) / weights.sum().clamp_min(1e-6)
+            if int(self.update_counts[c].item()) == 0:
+                self.prototypes[c] = F.normalize(centroid, dim=-1)
+            else:
+                self.prototypes[c] = F.normalize(
+                    momentum * self.prototypes[c]
+                    + (1.0 - momentum) * centroid,
+                    dim=-1,
+                )
+            self.update_counts[c] += 1
 
 
 class ProtoTailComponents(nn.Module):
@@ -252,8 +268,14 @@ class ProtoTailPlugin:
         losses: dict[str, torch.Tensor] = {}
         if is_simgcd:
             view_count = logits.shape[0] // batch_size
+            # Preserve native SimGCD global-head gradients; local branch stays trainable.
+            global_aux = (
+                logits.detach()
+                if self.config.get("detach_global_in_aux", True)
+                else logits
+            )
             fused_logits = (
-                logits
+                global_aux
                 + float(self.config.get("part_weight", 0.5)) * part_scores
             )
             repeated_mask = labeled.repeat(view_count)
@@ -268,7 +290,9 @@ class ProtoTailPlugin:
             supervised_logits = fused_logits[labeled]
             supervised_labels = labels[labeled]
 
-        if has_labeled:
+        if has_labeled and int(context["epoch"]) >= int(
+            self.config.get("part_ce_start_epoch", 30)
+        ):
             scaled_fused = supervised_logits / float(
                 self.config.get("temperature", 0.1)
             )
@@ -315,11 +339,9 @@ class ProtoTailPlugin:
         if capacity_weight > 0 and regularize_gates:
             frequencies = context.get("estimated_frequencies")
             if frequencies is None:
-                frequencies = context.get("class_frequencies")
-            if frequencies is None:
                 raise RuntimeError(
-                    "ProtoTail capacity regularization requires "
-                    "estimated_frequencies"
+                    "ProtoTail Lcap requires estimated_frequencies from masked data; "
+                    "GT Novel class_counts are forbidden"
                 )
             frequencies = torch.as_tensor(
                 frequencies,
@@ -344,6 +366,17 @@ class ProtoTailPlugin:
                 target_capacity = target_capacity.clamp(
                     1.0,
                     float(self._components().prototypes.num_slots),
+                )
+            target_mode = str(
+                self.config.get("capacity_target_mode", "frequency")
+            )
+            if target_mode == "uniform":
+                target_capacity = target_capacity.mean().expand_as(
+                    target_capacity
+                )
+            elif target_mode != "frequency":
+                raise ValueError(
+                    f"Unknown capacity_target_mode: {target_mode}"
                 )
             capacity_loss = F.mse_loss(
                 gates.sum(dim=-1),
@@ -412,40 +445,14 @@ class ProtoTailPlugin:
         model: Any,
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         components = self._components()
-        backbone = getattr(model, "contrastive_backbone", None)
-        if backbone is None:
-            backbone = getattr(model, "backbone", None)
-        if backbone is None:
-            raise ValueError("ProtoTail model does not expose its backbone")
-        finetune_from_block = int(
-            getattr(model, "finetune_from_block", 11)
-        )
-        self._shared_parameters = tuple(
-            parameter
-            for name, parameter in backbone.named_parameters()
-            if parameter.requires_grad
-            and (
-                (block_index := parse_block_index(name)) is not None
-                and block_index >= finetune_from_block
-            )
-        )
-        part_groups: list[Mapping[str, Any]] = [
-            {
-                "params": list(components.parts.parameters()),
-                "lr": float(self.config.get("learning_rate", 0.05)),
-            }
-        ]
-        if self._shared_parameters:
-            part_groups.append(
-                {
-                    "params": list(self._shared_parameters),
-                    "lr": float(
-                        self.config.get("shared_backbone_learning_rate", 0.01)
-                    ),
-                }
-            )
+        self._shared_parameters = ()  # Baseline optimizer owns shared backbone.
         return {
-            "part": part_groups,
+            "part": [
+                {
+                    "params": list(components.parts.parameters()),
+                    "lr": float(self.config.get("learning_rate", 0.05)),
+                }
+            ],
             "gate": [
                 {
                     "params": [components.prototypes.gate_logits],
@@ -472,59 +479,86 @@ class ProtoTailPlugin:
             raise RuntimeError("ProtoTail output was not augmented")
         epoch = int(context["epoch"])
         total_epochs = int(context.get("total_epochs", epoch + 1))
-        prototype_start = min(
-            int(self.config.get("prototype_warmup_epochs", 30)),
-            total_epochs - 1,
-        )
-        if epoch < prototype_start:
-            return
-        is_simgcd = "student" in output.branches
-        known_end_epoch = self.config.get("known_prototype_end_epoch")
-        if known_end_epoch is not None and epoch > int(known_end_epoch):
-            return
-
-        batch_size = int(batch.sample_ids.numel())
-        parts = values["parts"][:batch_size].detach()
-        logits = values["global_logits"][:batch_size].detach()
+        n = int(batch.sample_ids.numel())
+        parts = values["parts"][:n].detach()
+        logits = values["global_logits"][:n].detach()
         labels = torch.as_tensor(batch.known_targets, device=parts.device).long()
-        labeled = torch.as_tensor(
+        originally_labeled = torch.as_tensor(
             batch.labeled_mask,
             device=parts.device,
         ).bool()
+        k = int(context["num_known_classes"])
+        if not 0 <= k <= logits.shape[-1]:
+            raise ValueError("Invalid known class count for ProtoTail")
         bank = self._components().prototypes
         momentum = float(self.config.get("prototype_momentum", 0.99))
 
-        if torch.any(labeled):
-            bank.update_known(parts[labeled], labels[labeled], momentum)
+        # Known prototypes: only original labeled GT, through epoch 200.
+        if bool(originally_labeled.any()):
+            known_labels = labels[originally_labeled]
+            if bool(((known_labels < 0) | (known_labels >= k)).any()):
+                raise RuntimeError("Known labels outside known-class range")
+            bank.update_known(parts[originally_labeled], known_labels, momentum)
 
-        unlabeled = ~labeled
-        if not torch.any(unlabeled):
+        # Accepted D2 candidates are more reliable than transient pseudo IDs.
+        store = context.get("persistent_promotion_store")
+        accepted_novel = torch.zeros_like(originally_labeled)
+        if store is not None:
+            accepted_labels, accepted = store.lookup(batch)
+            accepted_labels = accepted_labels.to(parts.device)
+            accepted = accepted.to(parts.device).bool() & (accepted_labels >= k)
+            accepted_novel = accepted
+            if bool(accepted.any()):
+                conf, pred = (
+                    (logits / float(self.config.get("temperature", 0.1)))
+                    .softmax(-1)
+                    .max(-1)
+                )
+                stable = (
+                    accepted
+                    & (pred == accepted_labels)
+                    & (conf >= float(self.config.get("pseudo_confidence", 0.7)))
+                )
+                if bool(stable.any()):
+                    bank.update_novel(
+                        parts[stable],
+                        accepted_labels[stable],
+                        conf[stable],
+                        threshold=float(self.config.get("pseudo_confidence", 0.7)) - 1e-6,
+                        momentum=momentum,
+                        min_novel_class_id=k,
+                    )
+
+        # Provisional novel pseudo-memory remains limited to e30..e60.
+        start = min(
+            int(self.config.get("prototype_warmup_epochs", 30)),
+            total_epochs - 1,
+        )
+        end = int(self.config.get("novel_prototype_end_epoch", 60))
+        if not (start <= epoch <= end):
             return
-        class_count = logits.shape[-1]
-        known_class_count = int(context["num_known_classes"])
-        if not 0 <= known_class_count <= class_count:
-            raise ValueError("Invalid known class count for ProtoTail")
-        if epoch > int(self.config.get("novel_prototype_end_epoch", 60)):
+        unlabeled = (~originally_labeled) & (~accepted_novel)
+        if not bool(unlabeled.any()):
             return
-        pseudo_label_logits = logits
-        if not is_simgcd:
-            pseudo_label_logits = (
+        pseudo_logits = logits
+        if "student" not in output.branches:
+            pseudo_logits = (
                 logits
-                + float(self.config.get("part_weight", 0.5))
-                * bank(parts)[0]
+                + float(self.config.get("part_weight", 0.5)) * bank(parts)[0]
             )
-        probabilities = (
-            pseudo_label_logits / float(self.config.get("temperature", 0.1))
-        ).softmax(dim=-1)
-        confidence, pseudo_labels = probabilities.max(dim=-1)
-        if torch.any(unlabeled):
-            bank.update_novel(
-                parts[unlabeled],
-                pseudo_labels[unlabeled],
-                confidence[unlabeled],
-                threshold=float(self.config.get("pseudo_confidence", 0.7)),
-                momentum=momentum,
-            )
+        probs = (
+            pseudo_logits / float(self.config.get("temperature", 0.1))
+        ).softmax(-1)
+        confidence, pseudo_ids = probs.max(-1)
+        # min_novel_class_id is validated *inside* the memory update API.
+        bank.update_novel(
+            parts[unlabeled],
+            pseudo_ids[unlabeled],
+            confidence[unlabeled],
+            threshold=float(self.config.get("pseudo_confidence", 0.7)),
+            momentum=momentum,
+            min_novel_class_id=k,
+        )
 
     def predict(self, output: ModelOutput) -> PredictionOutput:
         values = output.auxiliary.get("prototail")
@@ -543,14 +577,29 @@ class ProtoTailPlugin:
             global_features, torch.Tensor
         ):
             raise TypeError("ProtoTail inference features must be tensors")
-        part_classes = part_scores.argmax(dim=-1)
-        gates = self._components().prototypes.gates()[part_classes]
+        pool_mode = str(self.config.get("eval_pool_mode", "mean_gate"))
+        all_gates = self._components().prototypes.gates()
+        if pool_mode == "mean_gate":
+            # Class-agnostic KMeans embedding, matching Alo_SimGCD intent.
+            gates = all_gates.mean(dim=0).unsqueeze(0).expand(parts.size(0), -1)
+        elif pool_mode == "argmax_class_gate":
+            gates = all_gates[part_scores.argmax(dim=-1)]  # Legacy, potentially circular.
+        else:
+            raise ValueError(f"Unknown eval_pool_mode: {pool_mode}")
         pooled_parts = (parts * gates.unsqueeze(-1)).sum(dim=1)
         pooled_parts = pooled_parts / gates.sum(dim=-1, keepdim=True).clamp_min(
             1e-6
         )
+        feature_mode = str(self.config.get("eval_feature_mode", "balanced_concat"))
+        if feature_mode == "balanced_concat":
+            global_for_eval = F.normalize(global_features, dim=-1)
+            part_for_eval = F.normalize(pooled_parts, dim=-1)
+        elif feature_mode == "legacy_concat":
+            global_for_eval, part_for_eval = global_features, pooled_parts
+        else:
+            raise ValueError(f"Unknown eval_feature_mode: {feature_mode}")
         features = F.normalize(
-            torch.cat((global_features, pooled_parts), dim=-1),
+            torch.cat((global_for_eval, part_for_eval), dim=-1),
             dim=-1,
         )
         return PredictionOutput(class_ids=None, features=features)

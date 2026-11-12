@@ -255,6 +255,18 @@ def main(allowed_baseline: str | None = None) -> None:
     parser.add_argument("--ablate-adaptive-capacity", "--ablate_adaptive_capacity", dest="ablate_adaptive_capacity", action="store_true", default=False, help="Ablate adaptive capacity")
     parser.add_argument("--enable-pseudo-labeling", "--enable_pseudo_labeling", dest="enable_pseudo_labeling", action="store_true", default=False, help="Enable pseudo labeling")
     parser.add_argument("--enable-novel-pseudo", "--enable_novel_pseudo", dest="enable_novel_pseudo", action="store_true", default=False, help="Enable novel pseudo labeling")
+    parser.add_argument(
+        "--pseudo-mode",
+        choices=["paper", "legacy_ce"],
+        default="paper",
+        help="paper=persistent D1/D2; legacy_ce=old batch pseudo loss",
+    )
+    parser.add_argument(
+        "--d2-min-cluster-size",
+        type=int,
+        default=10,
+        help="Paper default=10; 3 is an experimental LT20/50 redesign",
+    )
     parser.add_argument("--pseudo-warmup-epochs", "--pseudo_warmup_epochs", dest="pseudo_warmup_epochs", type=int, default=None, help="Override pseudo labeling warmup epochs")
     parser.add_argument("--pseudo-confidence", "--pseudo_confidence", dest="pseudo_confidence", type=float, default=None, help="Override pseudo confidence threshold")
     arguments, _ = parser.parse_known_args()
@@ -357,6 +369,11 @@ def main(allowed_baseline: str | None = None) -> None:
     if baseline_name == "simgcd" and hasattr(baseline, "eval_head"):
         baseline.eval_head = str(arguments.simgcd_eval_head or "kmeans")
     baseline_config = config["baseline"]["resolved"]
+    if baseline_name == "simgcd":
+        # Explicit data-specific REPRO setting, not a new SimGCD loss.
+        by_dataset = baseline_config.get("memax_weight_by_dataset", {})
+        if dataset_name in by_dataset:
+            baseline_config["memax_weight"] = float(by_dataset[dataset_name])
     if enable_pseudo:
         baseline_config["enable_pseudo_labeling"] = True
     if enable_novel:
@@ -431,10 +448,19 @@ def main(allowed_baseline: str | None = None) -> None:
     context["num_classes"] = dataset.num_classes
     context["num_known_classes"] = len(dataset.known_class_ids)
     if hasattr(dataset, "class_counts") and dataset.class_counts is not None:
+        # Allowed for evaluation Few/Med/Many ONLY; never feed this into losses.
         context["class_counts"] = dataset.class_counts
-        context["class_frequencies"] = torch.as_tensor(
-            dataset.class_counts, dtype=torch.float32, device=device
-        )
+    context["needs_frequency_estimate"] = bool(
+        baseline_name == "simgcd"
+        and method_enabled
+        and float(method_settings.get("capacity_regularization_weight", 0.0)) > 0
+    )
+    context["known_frequency_mapping"] = str(
+        method_settings.get("known_frequency_mapping", "direct_hungarian")
+    )
+    context["novel_frequency_mapping"] = str(
+        method_settings.get("novel_frequency_mapping", "output_aligned")
+    )
     context["total_epochs"] = epoch_count
     context["use_logit_adjust"] = bool(
         baseline_config.get("use_logit_adjust", False)
@@ -445,6 +471,31 @@ def main(allowed_baseline: str | None = None) -> None:
     context["enable_novel_pseudo"] = bool(
         baseline_config.get("enable_novel_pseudo", False)
     )
+    paper_selector = None
+    if (
+        baseline_name == "simgcd"
+        and enable_pseudo
+        and arguments.pseudo_mode == "paper"
+    ):
+        from prototail_gcd.pseudo.paper_selector import PaperDualSelector
+        from prototail_gcd.pseudo.promotion_store import PromotionStore
+
+        context["persistent_promotion_store"] = PromotionStore(
+            dataset.num_classes,
+            len(dataset.known_class_ids),
+        )
+        paper_selector = PaperDualSelector(
+            n_known=len(dataset.known_class_ids),
+            n_classes=dataset.num_classes,
+            seed=seed,
+            min_novel_cluster_size=int(arguments.d2_min_cluster_size),
+            novel_epochs=(50, 60, 70, 80, 90, 100) if enable_novel else (),
+        )
+        # Do not train transient CE and D1/D2 on the same samples twice.
+        baseline_config["enable_pseudo_labeling"] = False
+        baseline_config["enable_novel_pseudo"] = False
+        context["enable_pseudo_labeling"] = False
+        context["enable_novel_pseudo"] = False
 
     # Determine explicit ablation configuration name
     if not method_enabled and not enable_pseudo:
@@ -554,6 +605,15 @@ def main(allowed_baseline: str | None = None) -> None:
                     empty_metric_value=empty_metric_val,
                     use_fp16=use_fp16_flag,
                 )
+            if paper_selector is not None and paper_selector.scheduled(epoch + 1):
+                record["paper_selection"] = paper_selector.run(
+                    epoch + 1,
+                    model,
+                    baseline,
+                    dataset.evaluation_loaders["distribution"],
+                    device,
+                    context["persistent_promotion_store"],
+                )
             serialized_record = json.dumps(record, sort_keys=True, allow_nan=False)
             print(serialized_record, flush=True)
             metrics_file.write(serialized_record + "\n")
@@ -583,18 +643,23 @@ def main(allowed_baseline: str | None = None) -> None:
                     p_new = test_m.get("parametric_novel_acc", 0.0)
                     print(f"  [SimGCD Diagnostics] Parametric Head: All {p_acc:.2f} | Known {p_old:.2f} | Novel {p_new:.2f}", flush=True)
 
+                # TEST GT cannot determine a training checkpoint.
                 if all_a > best_test_acc:
-                    best_test_acc = all_a
+                    best_test_acc = all_a  # diagnostic only
+                if is_last_epoch:
                     torch.save(
                         {
                             "model": model.state_dict(),
                             "epoch": epoch + 1,
-                            "best_test_metrics": test_m,
+                            "selection_protocol": "fixed_final_epoch_unlabeled_train",
                             "config": config,
                         },
                         best_checkpoint_path,
                     )
-                    print(f"  [*] New best test All Acc: {best_test_acc:.2f}% -> saved to {best_checkpoint_path.name}", flush=True)
+                    print(
+                        f"[FIXED-EPOCH CHECKPOINT] E{epoch + 1}: {best_checkpoint_path}",
+                        flush=True,
+                    )
             if method is not None and ((epoch + 1) % 10 == 0 or is_last_epoch):
                 try:
                     with torch.no_grad():
@@ -607,6 +672,33 @@ def main(allowed_baseline: str | None = None) -> None:
                         u_slots = float(gates[known_class_count:].sum(dim=-1).mean().item()) if gates.shape[0] > known_class_count else 0.0
                         print(f"[PROTOTYPE CAMERA] Epoch {epoch + 1}: Gate mean={mean_g:.3f} max={max_g:.3f} frac_open(>0.5)={frac_o:.1%} active_slots_per_class~={active_s:.2f}", flush=True)
                         print(f"  Active Slots/Class: Known ~ {k_slots:.2f} | Novel ~ {u_slots:.2f}", flush=True)
+                        bank = method._components().prototypes
+                        if hasattr(bank, "update_counts"):
+                            updated = bank.update_counts
+                            print(
+                                f"[PROTOTYPE COVERAGE] Known {int((updated[:known_class_count] > 0).sum())}/{known_class_count} | Novel {int((updated[known_class_count:] > 0).sum())}/{len(updated) - known_class_count}",
+                                flush=True,
+                            )
+                        freq = engine.context.get("estimated_frequencies")
+                        if freq is not None:
+                            freq = freq.to(gates.device).float().clamp_min(1e-8)
+                            low, high = freq.min(), freq.max()
+                            if high <= low:
+                                target = torch.full_like(freq, float(gates.shape[1]))
+                            else:
+                                log_f = freq.log()
+                                target = 1.0 + (gates.shape[1] - 1) * (
+                                    log_f - log_f.min()
+                                ) / (log_f.max() - log_f.min() + 1e-8)
+                            mode = method_settings.get("capacity_target_mode", "frequency")
+                            if mode == "uniform":
+                                target = target.mean().expand_as(target)
+                            mae = float((gates.sum(-1) - target).abs().mean().item())
+                            relative = gates / gates.sum(-1, keepdim=True).clamp_min(1e-6)
+                            print(
+                                f"[GATE AUDIT] capacity_MAE={mae:.4f} relative_slot_STD={relative.std(-1).mean().item():.4f}",
+                                flush=True,
+                            )
                 except Exception:
                     pass
             torch.save(

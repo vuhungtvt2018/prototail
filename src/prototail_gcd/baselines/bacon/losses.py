@@ -48,6 +48,44 @@ class SemiConLoss(nn.Module):
         return loss.view(view_count, batch_size).mean()
 
 
+def align_novel_cluster_counts(
+    assignments: np.ndarray,
+    novel_cluster_ids: list[int],
+    classifier_probabilities: np.ndarray,
+    num_known_classes: int,
+) -> np.ndarray:
+    """One-to-one KMeans-cluster -> NOVEL classifier-dimension alignment (no novel GT).
+
+    When the association is uninformative early in training, return a neutral
+    uniform capacity support rather than assigning a random cluster rank.
+    """
+    ids = np.asarray(novel_cluster_ids, dtype=np.int64)
+    probs = np.asarray(classifier_probabilities, dtype=np.float64)
+    assigned = np.asarray(assignments, dtype=np.int64)
+    if probs.ndim != 2 or assigned.shape != (len(probs),):
+        raise ValueError("Invalid probabilities / assignments")
+    n = probs.shape[1] - num_known_classes
+    if len(ids) != n or n <= 0:
+        raise ValueError("Novel clusters and output dimensions do not match")
+    scores = np.zeros((n, n), dtype=np.float64)
+    counts = np.zeros(n, dtype=np.float32)
+    for i, cluster in enumerate(ids):
+        members = assigned == cluster
+        counts[i] = int(members.sum())
+        if members.any():
+            row = probs[members, num_known_classes:].mean(axis=0)
+            scores[i] = row / max(float(row.sum()), 1e-12)
+    if not np.isfinite(scores).all():
+        raise RuntimeError("Invalid novel posterior")
+    if n > 1 and float(np.max(scores, axis=1).mean()) < max(0.03, 2.0 / n):
+        # Intentionally conservative, no rank-based made-up class identity.
+        return np.full(n, max(float(counts.mean()), 1.0), dtype=np.float32)
+    rows, cols = linear_sum_assignment(-scores)
+    result = np.zeros(n, dtype=np.float32)
+    result[cols] = counts[rows]
+    return np.maximum(result, 1.0)
+
+
 def estimate_class_frequencies(
     model: Any,
     loader: Any,
@@ -57,12 +95,16 @@ def estimate_class_frequencies(
     finetune_from_block: int,
     random_state: int,
     device: torch.device,
+    known_frequency_mapping: str = "bacon_rank",
+    novel_frequency_mapping: str = "bacon_rank",
+    classifier_temperature: float = 0.1,
 ) -> torch.Tensor:
     from prototail_gcd.models.dino_backbone import forward_global_and_patches
 
     features: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     labeled_masks: list[np.ndarray] = []
+    classifier_probs: list[np.ndarray] = []
     model.eval()
     with torch.no_grad():
         for batch in loader:
@@ -84,6 +126,17 @@ def estimate_class_frequencies(
                 images,
                 finetune_from_block=finetune_from_block,
             )
+            if novel_frequency_mapping == "output_aligned":
+                if not hasattr(model, "projector"):
+                    raise RuntimeError("output_aligned support requires SimGCD model")
+                output = model(images)
+                class_logits = output[2]  # SimGCDNetwork: CLS, projection, logits, patches
+                classifier_probs.append(
+                    (class_logits.float() / classifier_temperature)
+                    .softmax(-1)
+                    .cpu()
+                    .numpy()
+                )
             features.append(F.normalize(global_features, dim=-1).cpu().numpy())
             targets.append(batch_targets.reshape(-1))
             labeled_masks.append(batch_labeled.reshape(-1))
@@ -127,21 +180,38 @@ def estimate_class_frequencies(
         for class_id in range(num_known_classes)
         if class_id in cluster_for_class
     ]
-    labeled_class_counts = np.bincount(
-        all_targets[all_labeled],
-        minlength=num_known_classes,
-    )[:num_known_classes]
+    if len(known_cluster_ids) != num_known_classes:
+        raise RuntimeError("Known-class Hungarian alignment is incomplete")
     estimate = np.ones(num_classes, dtype=np.float32)
-    known_by_support = np.argsort(labeled_class_counts)
-    known_cluster_counts = np.sort(cluster_counts[known_cluster_ids])
-    if len(known_by_support) != len(known_cluster_counts):
-        raise RuntimeError("known-class frequency alignment is incomplete")
-    estimate[known_by_support] = known_cluster_counts
+    if known_frequency_mapping == "direct_hungarian":
+        for c in range(num_known_classes):
+            estimate[c] = cluster_counts[cluster_for_class[c]]
+    elif known_frequency_mapping == "bacon_rank":
+        known_support = np.bincount(
+            all_targets[all_labeled],
+            minlength=num_known_classes,
+        )[:num_known_classes]
+        known_by_support = np.argsort(known_support, kind="stable")
+        estimate[known_by_support] = np.sort(cluster_counts[known_cluster_ids])
+    else:
+        raise ValueError(f"Unknown known frequency mapping: {known_frequency_mapping}")
 
     novel_cluster_ids = sorted(set(range(num_classes)) - set(known_cluster_ids))
-    novel_cluster_counts = np.sort(cluster_counts[novel_cluster_ids])[::-1]
     novel_count = num_classes - num_known_classes
-    estimate[num_known_classes:] = novel_cluster_counts[:novel_count]
+    if novel_frequency_mapping == "output_aligned":
+        if not classifier_probs:
+            raise RuntimeError("Output alignment requires classifier predictions")
+        estimate[num_known_classes:] = align_novel_cluster_counts(
+            assignments,
+            novel_cluster_ids,
+            np.concatenate(classifier_probs, axis=0),
+            num_known_classes,
+        )
+    elif novel_frequency_mapping == "bacon_rank":
+        novel_cluster_counts = np.sort(cluster_counts[novel_cluster_ids])[::-1]
+        estimate[num_known_classes:] = novel_cluster_counts[:novel_count]
+    else:
+        raise ValueError(f"Unknown novel frequency mapping: {novel_frequency_mapping}")
     return torch.as_tensor(estimate, dtype=torch.float32, device=device)
 
 

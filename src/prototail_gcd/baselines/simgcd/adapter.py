@@ -200,34 +200,37 @@ class SimGCDAdapter:
         context: Mapping[str, Any],
         config: Mapping[str, Any],
     ) -> Mapping[str, Any] | None:
+        if not bool(context.get("needs_frequency_estimate", False)):
+            return None  # Plugin off = original SimGCD, zero estimator overhead.
         interval = int(config.get("distribution_estimate_interval", 10))
         if epoch != 0 and epoch % interval:
             return None
         loader = context.get("distribution_loader")
         if loader is None:
-            freq = context.get("class_frequencies")
-            if freq is not None:
-                return {"estimated_frequencies": freq}
-            return None
-        device = next(model.backbone.parameters()).device
+            raise RuntimeError("Tail-aware requires masked distribution_loader")
         from prototail_gcd.baselines.bacon.losses import estimate_class_frequencies
+
+        was_training = model.training
         try:
-            frequencies = estimate_class_frequencies(
+            estimate = estimate_class_frequencies(
                 model,
                 loader,
                 num_classes=int(context["num_classes"]),
                 num_known_classes=int(context["num_known_classes"]),
                 finetune_from_block=model.finetune_from_block,
                 random_state=int(config.get("distribution_cluster_seed", 0)),
-                device=device,
+                device=next(model.backbone.parameters()).device,
+                known_frequency_mapping=str(
+                    context.get("known_frequency_mapping", "direct_hungarian")
+                ),
+                novel_frequency_mapping=str(
+                    context.get("novel_frequency_mapping", "output_aligned")
+                ),
+                classifier_temperature=float(config.get("student_temp", 0.1)),
             )
-            model.train()
-            return {"estimated_frequencies": frequencies}
-        except Exception:
-            freq = context.get("class_frequencies")
-            if freq is not None:
-                return {"estimated_frequencies": freq}
-            return None
+        finally:
+            model.train(was_training)
+        return {"estimated_frequencies": estimate}
 
     def after_optimizer_step(
         self,

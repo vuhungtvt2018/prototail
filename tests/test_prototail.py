@@ -82,15 +82,25 @@ class ProtoTailTests(unittest.TestCase):
         )
         augmented = plugin.augment_output(output)
 
-        losses = plugin.compute_losses(
+        losses_warmup = plugin.compute_losses(
             augmented,
             batch,
             {"num_known_classes": 1, "epoch": 0},
         )
+        torch.testing.assert_close(
+            losses_warmup["part_classification"],
+            torch.tensor(0.0),
+        )
+
+        losses = plugin.compute_losses(
+            augmented,
+            batch,
+            {"num_known_classes": 1, "epoch": 30},
+        )
         values = augmented.auxiliary["prototail"]
         expected = torch.nn.functional.cross_entropy(
             (
-                values["global_logits"]
+                values["global_logits"].detach()
                 + 0.5 * values["part_scores"]
             ).view(2, 2, 3)[:, 0, :] / 0.1,
             torch.tensor([0, 0]),
@@ -98,7 +108,7 @@ class ProtoTailTests(unittest.TestCase):
 
         torch.testing.assert_close(losses["part_classification"], expected)
 
-    def test_simgcd_unlabeled_pseudo_labels_can_update_known_prototypes(self):
+    def test_simgcd_unlabeled_pseudo_labels_cannot_update_known_prototypes(self):
         torch = self.torch
         plugin = self.plugin_type()
         model = torch.nn.Linear(4, 3)
@@ -123,7 +133,7 @@ class ProtoTailTests(unittest.TestCase):
             labeled_mask=torch.tensor([True, False]),
             sample_ids=torch.tensor([10, 11]),
         )
-        before = plugin.components.prototypes.prototypes[0].clone()
+        before_known_0 = plugin.components.prototypes.prototypes[0].clone()
 
         plugin.after_optimizer_step(
             plugin.augment_output(output),
@@ -135,9 +145,11 @@ class ProtoTailTests(unittest.TestCase):
             },
         )
 
-        self.assertFalse(
-            torch.equal(before, plugin.components.prototypes.prototypes[0])
+        self.assertTrue(
+            torch.equal(before_known_0, plugin.components.prototypes.prototypes[0])
         )
+        self.assertEqual(int(plugin.components.prototypes.update_counts[0].item()), 0)
+        self.assertEqual(int(plugin.components.prototypes.update_counts[1].item()), 1)
 
     def test_capacity_loss_requires_a_real_distribution_estimate(self):
         torch = self.torch
@@ -233,7 +245,7 @@ class ProtoTailTests(unittest.TestCase):
         )
         torch.testing.assert_close(losses["capacity_regularization"], expected)
 
-    def test_method_optimizer_keeps_reference_shared_backbone_step(self):
+    def test_method_optimizer_leaves_backbone_to_baseline_optimizer(self):
         torch = self.torch
         plugin = self.plugin_type()
 
@@ -255,14 +267,11 @@ class ProtoTailTests(unittest.TestCase):
             for parameter in group["params"]
         }
 
-        self.assertIn(
+        self.assertNotIn(
             id(model.backbone.blocks[11].weight),
             part_parameter_ids,
         )
-        self.assertIn(
-            id(model.backbone.blocks[11].weight),
-            {id(parameter) for parameter in plugin.shared_parameters()},
-        )
+        self.assertEqual(tuple(plugin.shared_parameters()), ())
         self.assertNotIn(
             id(model.backbone.blocks[10].weight),
             part_parameter_ids,
